@@ -1,6 +1,26 @@
 import bpy
 import numpy as np
 from mathutils import Matrix as MAT
+import sys
+import os
+import importlib
+
+psep = os.path.sep
+path = '/home/rich/Desktop/cloth/character_engine'
+sys.path.append(path)
+
+try:
+    U = bpy.data.texts['utils.py'].as_module()
+    Q = bpy.data.texts['quaternions.py'].as_module()
+    C = bpy.data.texts['coordinates.py'].as_module()
+    
+except:
+    import utils as U
+    import quaternions as Q
+    import coordinates as C
+    importlib.reload(U)
+    importlib.reload(Q)
+    importlib.reload(C)
 
 
 #### quaternions ####
@@ -26,6 +46,22 @@ def set_ar_quats(ar, quats):
 
 
 #### quaternions ####
+def set_ar_m3_world(ar, m3=None, locations=None):
+    """Sets the world rotation correctly
+    in spite of parent bones. (and constraints??)"""
+    for i in range(len(ar.pose.bones)):
+        bpy.context.view_layer.update()
+        arm = ar.pose.bones[i].matrix
+        nparm = np.array(arm)
+        if m3 is not None:
+            #qte = quat_to_euler(quats[i], factor=1)        
+            nparm[:3, :3] = m3[i]
+        if locations is not None:
+            nparm[:3, 3] = locations[i]
+        ar.pose.bones[i].matrix = MAT(nparm)
+
+
+#### quaternions ####
 def set_ar_quats_world(ar, quats=None, locations=None):
     """Sets the world rotation correctly
     in spite of parent bones. (and constraints??)"""
@@ -34,7 +70,7 @@ def set_ar_quats_world(ar, quats=None, locations=None):
         arm = ar.pose.bones[i].matrix
         nparm = np.array(arm)
         if quats is not None:
-            qte = quat_to_euler(quats[i], factor=1)        
+            qte = Q.quat_to_euler(quats[i], factor=1)        
             nparm[:3, :3] = qte
         if locations is not None:
             nparm[:3, 3] = locations[i]
@@ -57,6 +93,23 @@ def get_bone_tail(ar, tail=None):
     ar.pose.bones.foreach_get('tail', tail.ravel())
     return tail
 
+
+def get_bone_vecs(ar):
+    head = get_bone_head(ar)
+    tail = get_bone_tail(ar)
+    return (tail - head)
+
+
+def get_bone_eco(ar, out=None):
+    if out is None:
+        bc = len(ar.pose.bones)
+        out = np.empty((bc, 2, 3), dtype=np.float32)
+    head = get_bone_head(ar)
+    tail = get_bone_tail(ar)
+    out[:, 0] = head
+    out[:, 1] = tail
+    return out
+        
 
 def get_bone_centers(ar, scale=0.5):
     """Get bone center or put scale
@@ -85,20 +138,22 @@ def get_bone_locations(ar, location=None):
 
 #### armature ####
 def get_bone_location_world(ar, location=None):
-    """y and z are flipped on pose bones... why???"""
-    
+    """Get locs from matrix"""
     if location is None:
         location = np.empty((len(ar.pose.bones), 3), dtype=np.float32)
-        #yz = np.empty((len(ar.pose.bones), 3), dtype=np.float32)
     for e, bo in enumerate(ar.pose.bones):
         location[e] = np.array(bo.matrix, dtype=np.float32)[:3, 3]
-    yz = location
-    #ar.pose.bones.foreach_get('location', location.ravel())
-    #yz[:, 0] = location[:, 0]
-    #yz[:, 1] = -location[:, 2]
-    #yz[:, 2] = location[:, 1]
-    return yz
+    return location
 
+
+def get_ar_m3(ar, m3=None):
+    bc = len(ar.pose.bones)
+    if m3 is None:
+        m3 = np.empty((bc, 3, 3), dtype=np.float32)
+    for e, bo in enumerate(ar.pose.bones):
+        m3[e] = np.array(bo.matrix, dtype=np.float32)[:3, :3]
+    return m3
+    
 
 #### armature ####    
 def set_bone_locations(ar, location, yz=None):
