@@ -1,7 +1,21 @@
 import bpy
 import numpy as np
+import sys
+import os
 from mathutils import Matrix as MAT
 
+psep = os.path.sep
+path = '/home/rich/Desktop/cloth/character_engine'
+sys.path.append(path)
+
+try:
+    U = bpy.data.texts['utils.py'].as_module()
+    
+except:
+    import utils as U
+    importlib.reload(U)
+
+NQ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 #### quaternions ####
 def get_quat(rad, axis, normalize=False):
@@ -14,16 +28,21 @@ def get_quat(rad, axis, normalize=False):
 
 
 #### quaternions ####
-def get_quats(rad, axis, normalize=False):
+def get_quats(rad, axis, normalize=False, out=None):
     if normalize:    
         axis = axis / np.sqrt(np.einsum('ij,ij->i', axis, axis))[:, None]
     theta = (rad * 0.5)
+    if out is not None:
+        out[:, 0] = np.cos(theta)
+        out[:, 1:] = axis * np.sin(theta)[:, None]
+        out[np.any(np.isnan(out), axis=1)] = NQ
+        return
     w = np.cos(theta)
     q_axis = axis * np.sin(theta)[:, None]
     return w, q_axis
 
 
-def get_edge_match_quats(e1, e2):
+def get_edge_match_quats(e1, e2, out=None):
     """e1 and e2 are Nx2x3.
     Generate the quats that
     would rotate the e1, or
@@ -35,6 +54,10 @@ def get_edge_match_quats(e1, e2):
     dots = U.compare_vecs(ue1, ue2)
     angle = np.arccos(dots)
     axis = np.cross(ue1, ue2)
+    print(axis, "axis here")
+    if out is not None:
+        get_quats(angle, axis, normalize=True, out=out)
+        return
     w, quax = get_quats(angle, axis, normalize=True)
     
 
@@ -169,6 +192,21 @@ def quaternion_subtract(w1, v1, w2, v2):
     w = w1 * w2 - np.dot(v1, v2)
     v = w1 * v2 + w2 * v1 + np.cross(v1, v2)
     return w, -v
+
+
+def quaternions_subtract(q1, q2, out=None):
+    """Get the quaternion that rotates one quaternion to another"""
+    if out is not None:
+        out[:, 0] = (q1[:, 0] * q2[:, 0]) - np.einsum('ij,ij->i', q1[:, 1:], q2[:, 1:])
+        v = (q1[:, 0][:, None] * q2[:, 1:]) + (q2[:, 0][:, None] * q1[:, 1:]) + np.cross(q1[:, 1:], q2[:, 1:])
+        out[:, 1:] = -v
+        return
+    #w = w1 * w2 - np.dot(v1, v2)
+    w = (q1[:, 0] * q2[:, 0]) - np.einsum('ij,ij->i', q1[:, 1:], q2[:, 1:])
+    #v = w1 * v2 + w2 * v1 + np.cross(v1, v2)
+    v = (q1[:, 0][:, None] * q2[:, 1:]) + (q2[:, 0][:, None] * q1[:, 1:]) + np.cross(q1[:, 1:], q2[:, 1:])
+    return w, -v
+
 # ----- end quaternions ----- #
 
     
