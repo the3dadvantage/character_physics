@@ -4,19 +4,15 @@ import numpy as np
 import sys
 import os
 import importlib
+
 psep = os.path.sep
-
-
 path = '/home/rich/Desktop/cloth/character_engine'
 sys.path.append(path)
 
 try:
     U = bpy.data.texts['utils.py'].as_module()
-    print(1)
     Q = bpy.data.texts['quaternions.py'].as_module()
-    print(2)
     C = bpy.data.texts['coordinates.py'].as_module()
-    print(3)
     A = bpy.data.texts['armatures.py'].as_module()
     
 except:
@@ -27,6 +23,7 @@ except:
     importlib.reload(U)
     importlib.reload(Q)
     importlib.reload(C)
+    importlib.reload(A)
 
 
 
@@ -71,13 +68,17 @@ class physics():
         ob.data.shape_keys.key_blocks["Current"].value = 1.0
         #ob.data.update()
         
+        # indexing
         self.obm = U.get_bmesh(ob)
         self.pinned = np.array([v.select for v in self.obm.verts], dtype=bool)
         self.stretch_idx, self.stretch_repeat, self.stretch_counts = get_stretch_springs(self)
+        
+        # targeting
         self.stretch_dist = np.empty(self.stretch_repeat.shape[0], dtype=np.float32)
         self.stretch_dif = np.empty((self.stretch_repeat.shape[0], 3), dtype=np.float32)
         self.stretch_mean = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
         
+        # coordinates
         self.target_co = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
         C.get_shape_co_mode(ob=self.ob, co=self.target_co, key='Target')
         self.current_co = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
@@ -85,14 +86,24 @@ class physics():
         self.crawl = np.copy(self.current_co)
         self.crawl_output = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
         
+        # linear
         self.stretch_co = self.current_co[self.stretch_idx]
         self.repeat_co = self.current_co[self.stretch_repeat]
         dif = np.subtract(self.target_co[self.stretch_idx], self.target_co[self.stretch_repeat], out=self.stretch_dif)
         self.target_dist = np.sqrt(np.einsum('ij,ij->i', dif, dif, out=self.stretch_dist))[:, None]
         
+        # velocity
         self.velocity = np.zeros((len(ob.data.vertices), 3), dtype=np.float32)
         self.vel_start = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
         self.vel_start[:] = self.current_co
+        
+        # quats
+        self.eidx = get_edge_bone_idx(ar_mesh)
+        self.edge_match_quats = np.empty((self.eidx.shape[0], 4), dtype=np.float32)
+        self.edge_dif_quats = np.empty((self.eidx.shape[0], 4), dtype=np.float32)
+        # e1 is the start state of the mesh before forces
+        # e2 comes after stretch and velocity
+        #get_edge_match_quats(e1, e2, out=None)
                 
         
     def refresh(self):
@@ -104,20 +115,14 @@ class physics():
         #self.vel_start[:] = self.current_co
 
 
-def stretch_solve(ph):
+def linear_solve(ph):
 
-    cheat = False
-    #cheat = True
-    if cheat:
-        ph.crawl[:] = ph.current_co
     ph.current_co[ph.pinned] = ph.crawl[ph.pinned]
     
     ph.stretch_co[:] = ph.current_co[ph.stretch_idx]
     ph.repeat_co[:] = ph.current_co[ph.stretch_repeat]
     dif = np.subtract(ph.repeat_co, ph.stretch_co, out=ph.stretch_dif)
     dist = np.sqrt(np.einsum('ij,ij->i', dif, dif, out=ph.stretch_dist))
-    
-    #print(ph.target_dist - dist)
     
     u_dif = dif / dist[:, None]
     #u_dif = np.divide(dif finish this / dist[:, None]
@@ -126,16 +131,32 @@ def stretch_solve(ph):
     np.add.at(ph.stretch_mean, ph.stretch_repeat, new_locs)
     ph.stretch_mean /= ph.stretch_counts
     
-    #move = ph.current_co
     if ph.ob.data.is_editmode:
         ph.current_co[~ph.pinned] = ph.stretch_mean[~ph.pinned]
     else:    
         ph.current_co = ph.stretch_mean
-    
-    if cheat:
-        move = (ph.current_co - ph.crawl) * 0.1 # * (ph.stretch_counts * 0.5))
-        ph.current_co += move
 
+
+def angular_solve(ph):
+    
+    # get linear angular effect----------
+    #e1 = ph.crawl[ph.eidx]
+    e1 = A.get_bone_eco(ph.phar)
+    e2 = ph.current_co[ph.eidx]
+
+
+
+    Q.get_edge_match_quats(e1, e2, out=ph.edge_match_quats)
+    ar_quats = A.get_ar_quats_world(ph.phar, quats=None)
+    
+    Q.quaternions_subtract(ph.edge_match_quats, ar_quats, out=ph.edge_dif_quats)
+    
+    #m3 = A.get_ar_m3(ph.phar)
+    #eu = Q.quat_to_euler(ph.edge_dif_quats[0], factor=1, m3=m3[0])
+    #print(m3[0])
+    #print(np.round(eu, 3))
+    #A.set_ar_m3_world(ph.phar, m3=eu, locations=None)
+    #return ph.edge_dif_quats
 
 
 import time
@@ -146,16 +167,14 @@ T = time.time()
 def live_update(scene=None):
     T = time.time()
     
-    
+    # update the bmesh ----------
     if ph.ob.data.is_editmode:    
         try:
             ph.obm.verts[0]
         except (ReferenceError, IndexError):
             ph.obm = U.get_bmesh(ph.ob, refresh=True)
-
-        # ph.pinned = np.array([v.select for v in ph.obm.verts], dtype=bool)
         
-        # update current_co to the grabbed location
+        # update grabbed points ----------
         for i, v, in enumerate(ph.obm.verts):
             ph.pinned[i] = v.select
             if ph.pinned[i]:
@@ -165,11 +184,16 @@ def live_update(scene=None):
     
     # run stretch and move if not pinned
     ph.crawl[:] = ph.current_co
-    for i in range(10):    
-        stretch_solve(ph)
-    #move = ph.current_co - ph.crawl
-    #ph.current_co += (move * 0.1)
     
+    for i in range(10):    
+        linear_solve(ph)
+
+    for i in range(1):
+        angular_solve(ph)
+            
+    gravity = -0.1
+    gravity = 0.0
+    ph.velocity[:,2] += gravity
     vel = ph.current_co - ph.vel_start
     ph.velocity += vel
         
@@ -202,7 +226,8 @@ def live_update(scene=None):
     #ph.refresh()
     
     mesh_bone_co = ph.current_co[ph.mesh_bone_idx]
-    A.set_ar_quats_world(ph.phar, quats=None, locations=mesh_bone_co)
+    A.set_ar_quats_world(ph.phar, quats=ph.edge_dif_quats, locations=mesh_bone_co)
+    #A.set_ar_quats_world(ph.phar, quats=None, locations=mesh_bone_co)
     
     print(time.time() - T)
     delay = 0.0
@@ -253,6 +278,9 @@ def get_edge_centers(co, eidx, scale=0.5):
 
 
 
+    
+
+
 
 ob1 = bpy.data.objects["c1"]
 ob2 = bpy.data.objects["c2"]
@@ -276,7 +304,7 @@ C.co_to_shape(ar_mesh, co=None, key="Basis")
 ph = physics(ar_mesh)
 
 #ph.refresh()
-#ph.ebidx = get_edge_bone_idx(ar_mesh)
+ph.eidx = get_edge_bone_idx(ar_mesh)
 ph.mesh_bone_idx = get_mesh_bone_idx(ar_mesh)
 ph.phar = phar
 
@@ -287,22 +315,22 @@ install_handler(live=False, animated=True)
     
 
 
-if False:
-    co = U.get_co(ar_mesh)
-    ebidx = get_edge_bone_idx(ar_mesh)
-    mesh_bone_idx = get_mesh_bone_idx(ar_mesh)
-    bone_centers = A.get_bone_centers(phar)
-    edge_centers = get_edge_centers(co, ebidx, scale=0.5)
+#if False:
+#    co = U.get_co(ar_mesh)
+#    ebidx = get_edge_bone_idx(ar_mesh)
+#    mesh_bone_idx = get_mesh_bone_idx(ar_mesh)
+#    bone_centers = A.get_bone_centers(phar)
+#    edge_centers = get_edge_centers(co, ebidx, scale=0.5)
 
-    mesh_bone_co = co[mesh_bone_idx]
+#    mesh_bone_co = co[mesh_bone_idx]
 
-    print(np.round(edge_centers,3))
-    print(np.round(bone_centers,3))
-    print(np.round(bone_centers,5) - np.round(edge_centers,5))
+#    print(np.round(edge_centers,3))
+#    print(np.round(bone_centers,3))
+#    print(np.round(bone_centers,5) - np.round(edge_centers,5))
 
-    print(A.get_bone_location_world(phar))
-    print(A.get_bone_head(phar))
+#    print(A.get_bone_location_world(phar))
+#    print(A.get_bone_head(phar))
 
-    mesh_bone_co = co[mesh_bone_idx] - A.get_bone_head(phar)
-    A.set_ar_quats_world(phar, quats=None, locations=co[mesh_bone_idx])
-    #Q.set_bone_locations(phar, mesh_bone_co)
+#    mesh_bone_co = co[mesh_bone_idx] - A.get_bone_head(phar)
+#    A.se.t_ar_quats_world(phar, quats=None, locations=co[mesh_bone_idx])
+#    #Q.set_bone_locations(phar, mesh_bone_co)
