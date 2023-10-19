@@ -4,6 +4,8 @@ import numpy as np
 import sys
 import os
 import importlib
+from mathutils import Matrix as MAT
+
 
 psep = os.path.sep
 path = '/home/rich/Desktop/cloth/character_engine'
@@ -137,26 +139,38 @@ def linear_solve(ph):
         ph.current_co = ph.stretch_mean
 
 
+def r_print(r, m=''):
+    print()
+    print(m + " --------")
+    if isinstance(r, list):
+        for v in r:
+            print(np.round(v, 3), m)
+        return        
+    print(np.round(r, 3), m)
+
+
 def angular_solve(ph):
     
     # get linear angular effect----------
-    #e1 = ph.crawl[ph.eidx]
+    mesh_bone_co = ph.current_co[ph.mesh_bone_idx]     
     e1 = A.get_bone_eco(ph.phar)
     e2 = ph.current_co[ph.eidx]
-
-
-
     Q.get_edge_match_quats(e1, e2, out=ph.edge_match_quats)
-    ar_quats = A.get_ar_quats_world(ph.phar, quats=None)
     
-    Q.quaternions_subtract(ph.edge_match_quats, ar_quats, out=ph.edge_dif_quats)
+    matrices = A.get_ar_matrix_world(ph.phar)
+    rot_m = Q.rotate_matrices(matrices, ph.edge_match_quats)
     
-    #m3 = A.get_ar_m3(ph.phar)
-    #eu = Q.quat_to_euler(ph.edge_dif_quats[0], factor=1, m3=m3[0])
-    #print(m3[0])
-    #print(np.round(eu, 3))
-    #A.set_ar_m3_world(ph.phar, m3=eu, locations=None)
-    #return ph.edge_dif_quats
+    new_quats = A.set_ar_m3_world(ph.phar, rot_m, locations=mesh_bone_co, return_quats=True)
+    tar_quats = A.get_ar_quats_world(ph.tar)
+    
+    print(tar_quats, "tar_quats")
+    #Q.quaternions_subtract(new_quats, q2, out=None)
+    
+    
+    print("new_quats:")
+    print(new_quats)
+    print()
+        
 
 
 import time
@@ -187,9 +201,6 @@ def live_update(scene=None):
     
     for i in range(10):    
         linear_solve(ph)
-
-    for i in range(1):
-        angular_solve(ph)
             
     gravity = -0.1
     gravity = 0.0
@@ -201,7 +212,7 @@ def live_update(scene=None):
     if True:    
         ph.current_co[~ph.pinned] += ph.velocity[~ph.pinned]
         #if ph.ob.data.is_editmode:
-            #ph.current_co[~ph.pinned] += ph.velocity[~ph.pinned]
+            #ph.current_co[~ph.pin ned] += ph.velocity[~ph.pinned]
         #else:    
             #ph.current_co += ph.velocity
         ph.velocity *= 0.95
@@ -222,11 +233,17 @@ def live_update(scene=None):
         U.set_shape_co(ph.ob, "Current", ph.current_co)
         ph.ob.data.update()
     
-    ph.vel_start[:] = ph.current_co
-    #ph.refresh()
+    #A.update_bones(ph.phar)
     
-    mesh_bone_co = ph.current_co[ph.mesh_bone_idx]
-    A.set_ar_quats_world(ph.phar, quats=ph.edge_dif_quats, locations=mesh_bone_co)
+    for i in range(1):
+        angular_solve(ph)
+    
+    ph.vel_start[:] = ph.current_co
+    
+    #ph.refresh()
+
+    #A.update_bones(ph.phar)
+    #A.set_ar_quats_world(ph.phar, quats=ph.edge_dif_quats, locations=mesh_bone_co)
     #A.set_ar_quats_world(ph.phar, quats=None, locations=mesh_bone_co)
     
     print(time.time() - T)
@@ -307,6 +324,7 @@ ph = physics(ar_mesh)
 ph.eidx = get_edge_bone_idx(ar_mesh)
 ph.mesh_bone_idx = get_mesh_bone_idx(ar_mesh)
 ph.phar = phar
+ph.tar = tar
 
 
 
