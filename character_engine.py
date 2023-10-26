@@ -7,6 +7,9 @@ import importlib
 from mathutils import Matrix as MAT
 
 
+DATA = {}
+
+
 psep = os.path.sep
 path = '/home/rich/Desktop/cloth/character_engine'
 sys.path.append(path)
@@ -28,7 +31,6 @@ except:
     importlib.reload(A)
 
 
-
 print()
 print("=== reload ===")
 print()
@@ -44,8 +46,7 @@ def get_stretch_springs(ph):
     else:
         fv = [[e.other_vert(ve).index
             for e in ve.link_edges]
-                for ve in ph.obm.verts]            
-    
+                for ve in ph.obm.verts]
     
     stretch_idx = []
     stretch_repeat = []
@@ -63,58 +64,14 @@ def get_stretch_springs(ph):
     return stretch_idx, stretch_repeat, stretch_counts
 
 
-class physics():
-    def __init__(self, ob):
-        self.ob = ob
-        U.manage_shapes(ob, shapes=["Basis", "Target", "Current"])
-        ob.data.shape_keys.key_blocks["Current"].value = 1.0
-        #ob.data.update()
-        
-        # indexing
-        self.obm = U.get_bmesh(ob)
-        self.pinned = np.array([v.select for v in self.obm.verts], dtype=bool)
-        self.stretch_idx, self.stretch_repeat, self.stretch_counts = get_stretch_springs(self)
-        
-        # targeting
-        self.stretch_dist = np.empty(self.stretch_repeat.shape[0], dtype=np.float32)
-        self.stretch_dif = np.empty((self.stretch_repeat.shape[0], 3), dtype=np.float32)
-        self.stretch_mean = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
-        
-        # coordinates
-        self.target_co = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
-        C.get_shape_co_mode(ob=self.ob, co=self.target_co, key='Target')
-        self.current_co = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
-        C.get_shape_co_mode(ob=self.ob, co=self.current_co, key='Current')
-        self.crawl = np.copy(self.current_co)
-        self.crawl_output = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
-        
-        # linear
-        self.stretch_co = self.current_co[self.stretch_idx]
-        self.repeat_co = self.current_co[self.stretch_repeat]
-        dif = np.subtract(self.target_co[self.stretch_idx], self.target_co[self.stretch_repeat], out=self.stretch_dif)
-        self.target_dist = np.sqrt(np.einsum('ij,ij->i', dif, dif, out=self.stretch_dist))[:, None]
-        
-        # velocity
-        self.velocity = np.zeros((len(ob.data.vertices), 3), dtype=np.float32)
-        self.vel_start = np.empty((len(ob.data.vertices), 3), dtype=np.float32)
-        self.vel_start[:] = self.current_co
-        
-        # quats
-        self.eidx = get_edge_bone_idx(ar_mesh)
-        self.edge_match_quats = np.empty((self.eidx.shape[0], 4), dtype=np.float32)
-        self.edge_dif_quats = np.empty((self.eidx.shape[0], 4), dtype=np.float32)
-        # e1 is the start state of the mesh before forces
-        # e2 comes after stretch and velocity
-        #get_edge_match_quats(e1, e2, out=None)
-                
-        
-    def refresh(self):
-        C.get_shape_co_mode(ob=self.ob, co=self.current_co, key='Current')
-        C.get_shape_co_mode(ob=self.ob, co=self.vel_start, key='Current')
-        #C.get_shape_co_mode(ob=self.ob, co=self.crawl, key='Current')
-        #U.get_shape_co(self.ob, "Current", self.current_co)
-        #U.get_shape_co(self.ob, "Current", self.crawl)
-        #self.vel_start[:] = self.current_co
+def r_print(r, m=''):
+    print()
+    print(m + " --------")
+    if isinstance(r, list):
+        for v in r:
+            print(np.round(v, 3), m)
+        return        
+    print(np.round(r, 3), m)
 
 
 def linear_solve(ph):
@@ -133,20 +90,10 @@ def linear_solve(ph):
     np.add.at(ph.stretch_mean, ph.stretch_repeat, new_locs)
     ph.stretch_mean /= ph.stretch_counts
     
-    if ph.ob.data.is_editmode:
+    if ph.phys_mesh.data.is_editmode:
         ph.current_co[~ph.pinned] = ph.stretch_mean[~ph.pinned]
     else:    
         ph.current_co = ph.stretch_mean
-
-
-def r_print(r, m=''):
-    print()
-    print(m + " --------")
-    if isinstance(r, list):
-        for v in r:
-            print(np.round(v, 3), m)
-        return        
-    print(np.round(r, 3), m)
 
 
 def angular_solve(ph):
@@ -157,21 +104,43 @@ def angular_solve(ph):
     e2 = ph.current_co[ph.eidx]
     Q.get_edge_match_quats(e1, e2, out=ph.edge_match_quats)
     
-    matrices = A.get_ar_matrix_world(ph.phar)
-    rot_m = Q.rotate_matrices(matrices, ph.edge_match_quats)
-    
-    new_quats = A.set_ar_m3_world(ph.phar, rot_m, locations=mesh_bone_co, return_quats=True)
-    tar_quats = A.get_ar_quats_world(ph.tar)
-    
-    print(tar_quats, "tar_quats")
-    #Q.quaternions_subtract(new_quats, q2, out=None)
-    
-    
-    print("new_quats:")
-    print(new_quats)
-    print()
-        
+    #matrices = A.get_ar_matrix_world(ph.phar)
+    m3 = A.get_ar_matrix_world(ph.phar, m3=True)
+    #rot_m = Q.rotate_matrices(matrices, ph.edge_match_quats)
+    rot_m = Q.rotate_m3s(m3, ph.edge_match_quats)
+    current_quats = A.set_ar_m3_world(ph.phar, rot_m, locations=mesh_bone_co, return_quats=True)
 
+    set_target = False
+    if set_target:
+        A.set_ar_m3_world(ph.tar, rot_m, locations=mesh_bone_co, return_quats=True)
+    # ------------------------------------
+    
+    # testing ---------
+    repeat = [4,3,1]
+    relative = [5,6,7]
+    
+    target = bpy.data.objects['target']
+    physics = bpy.data.objects['physics']
+        
+    target_m3 = A.get_ar_matrix_world(target, m3=True)
+    physics_m3 = A.get_ar_matrix_world(physics, m3=True)
+    
+    rot_m = np.linalg.inv(target_m3[repeat]) @ target_m3[relative]
+    physics_m3[relative] = physics_m3[repeat] @ rot_m
+
+    r_print(physics_m3)
+    A.set_ar_m3_world(physics, physics_m3)
+    return
+    rep_to_rel = Q.quaternions_subtract(target_q[repeat], target_q[relative], out=None)
+
+    t_to_p = Q.quaternions_subtract(target_q[repeat], physics_q[repeat])
+    
+    m31 = Q.rotate_m3s(target_m3[repeat], t_to_p)
+    
+    physics_m3[relative] = m31
+    A.set_ar_m3_world(physics, physics_m3)
+
+    
 
 import time
 T = time.time()
@@ -182,11 +151,11 @@ def live_update(scene=None):
     T = time.time()
     
     # update the bmesh ----------
-    if ph.ob.data.is_editmode:    
+    if ph.phys_mesh.data.is_editmode:    
         try:
             ph.obm.verts[0]
         except (ReferenceError, IndexError):
-            ph.obm = U.get_bmesh(ph.ob, refresh=True)
+            ph.obm = U.get_bmesh(ph.phys_mesh, refresh=True)
         
         # update grabbed points ----------
         for i, v, in enumerate(ph.obm.verts):
@@ -201,9 +170,12 @@ def live_update(scene=None):
     
     for i in range(10):    
         linear_solve(ph)
-            
-    gravity = -0.1
-    gravity = 0.0
+    
+    ob_gravity = ph.phys_mesh.Ce_props.gravity
+    gravity = ob_gravity
+    ob_velocity = ph.phys_mesh.Ce_props.velocity
+    #gravity = -0.1
+    #gravity = 0.0
     ph.velocity[:,2] += gravity
     vel = ph.current_co - ph.vel_start
     ph.velocity += vel
@@ -211,14 +183,14 @@ def live_update(scene=None):
     #if False:    
     if True:    
         ph.current_co[~ph.pinned] += ph.velocity[~ph.pinned]
-        #if ph.ob.data.is_editmode:
+        #if ph.phys_mesh.data.is_editmode:
             #ph.current_co[~ph.pin ned] += ph.velocity[~ph.pinned]
         #else:    
             #ph.current_co += ph.velocity
-        ph.velocity *= 0.95
+        ph.velocity *= ob_velocity
         ph.velocity[ph.pinned] = 0.0
         
-    if ph.ob.data.is_editmode:
+    if ph.phys_mesh.data.is_editmode:
         for i, v in enumerate(ph.obm.verts):
             if not v.select:    
                 v.co = ph.current_co[i] 
@@ -226,12 +198,12 @@ def live_update(scene=None):
                 #ph.current_co[i] = v.co 
             #else:
             #ph.vel_start[i] = v.co
-        bmesh.update_edit_mesh(ph.ob.data)
+        bmesh.update_edit_mesh(ph.phys_mesh.data)
         #ph.refresh()
 
     else:
-        U.set_shape_co(ph.ob, "Current", ph.current_co)
-        ph.ob.data.update()
+        C.set_shape_co(ph.phys_mesh, "Current", ph.current_co)
+        ph.phys_mesh.data.update()
     
     #A.update_bones(ph.phar)
     
@@ -271,84 +243,90 @@ def install_handler(live=False, animated=False):
     
     if animated:            
         bpy.app.handlers.frame_change_post.append(live_update)
+
+
+class physics():
+    def __init__(self, phar, tar):
+        DATA['ph'] = self
+        phys_mesh, edges, co, index, relative, repeater = A.make_ar_mesh(tar)
+        phys_mesh['ce_rig'] = phar.id_data
+        phys_mesh.show_in_front = True
+        phar['ce_phys_mesh'] = phys_mesh.id_data
+        self.eidx = np.array(edges, dtype=np.int32)
+        self.phys_mesh = phys_mesh
+        self.relative_bones = relative
+        self.relative_repeater = repeater
+        self.mesh_bone_idx = self.eidx[:, 0]
+        self.phar = phar
+        self.tar = tar
+        vc = len(phys_mesh.data.vertices)
         
-
-
-
-def get_edge_bone_idx(ob):
-    # for now:
-    return np.array([[0,1],[1,2],[2,3],[2,4]], dtype=np.int32)
-
-
-def get_mesh_bone_idx(ob):
-    return np.array([0, 1, 2, 2], dtype=np.int32)
-
-
-def get_edge_centers(co, eidx, scale=0.5):
-    """Start and end of edge
-    has to match head and tail
-    of bone if center of mass
-    is not at 0.5."""
-    head = co[eidx[:, 0]]
-    vec = (co[eidx[:,1]] - head) * scale
-    return head + vec
-
-
+        U.manage_shapes(phys_mesh, shapes=["Basis", "Target", "Current"])
+        phys_mesh.data.shape_keys.key_blocks["Current"].value = 1.0
+        phys_mesh.active_shape_key_index = 2
+        #ob.data.update()
+        
+        # indexing
+        self.obm = U.get_bmesh(phys_mesh)
+        self.pinned = np.array([v.select for v in self.obm.verts], dtype=bool)
+        self.stretch_idx, self.stretch_repeat, self.stretch_counts = get_stretch_springs(self)
+        
+        # targeting
+        self.stretch_dist = np.empty(self.stretch_repeat.shape[0], dtype=np.float32)
+        self.stretch_dif = np.empty((self.stretch_repeat.shape[0], 3), dtype=np.float32)
+        self.stretch_mean = np.empty((vc, 3), dtype=np.float32)
+        
+        # coordinates
+        self.target_co = np.empty((vc, 3), dtype=np.float32)
+        C.get_shape_co_mode(ob=phys_mesh, co=self.target_co, key='Target')
+        self.current_co = np.empty((vc, 3), dtype=np.float32)
+        C.get_shape_co_mode(ob=phys_mesh, co=self.current_co, key='Current')
+        self.crawl = np.copy(self.current_co)
+        self.crawl_output = np.empty((vc, 3), dtype=np.float32)
+        
+        # linear
+        self.stretch_co = self.current_co[self.stretch_idx]
+        self.repeat_co = self.current_co[self.stretch_repeat]
+        dif = np.subtract(self.target_co[self.stretch_idx], self.target_co[self.stretch_repeat], out=self.stretch_dif)
+        self.target_dist = np.sqrt(np.einsum('ij,ij->i', dif, dif, out=self.stretch_dist))[:, None]
+        
+        # velocity
+        self.velocity = np.zeros((vc, 3), dtype=np.float32)
+        self.vel_start = np.empty((vc, 3), dtype=np.float32)
+        self.vel_start[:] = self.current_co
+        
+        self.edge_match_quats = np.empty((self.eidx.shape[0], 4), dtype=np.float32)
+        self.edge_dif_quats = np.empty((self.eidx.shape[0], 4), dtype=np.float32)
+        # e1 is the start state of the mesh before forces
+        # e2 comes after stretch and velocity
+        
+        # testing:
+        self.start_tm3 = A.get_ar_matrix_world(self.tar, m3=True)[self.relative_repeater]
+                
+        
+    def refresh(self):
+        """No one is using this at the moment"""
+        C.get_shape_co_mode(ob=self.phys_mesh, co=self.current_co, key='Current')
+        C.get_shape_co_mode(ob=self.phys_mesh, co=self.vel_start, key='Current')
+        #C.get_shape_co_mode(ob=self.ob, co=self.crawl, key='Current')
+        #C.get_shape_co(self.ob, "Current", self.current_co)
+        #C.get_shape_co(self.ob, "Current", self.crawl)
+        #self.vel_start[:] = self.current_co
 
     
+#phar = bpy.data.objects['phar']
+#phar = bpy.data.objects['dup']
 
-
-
-ob1 = bpy.data.objects["c1"]
-ob2 = bpy.data.objects["c2"]
-ar_mesh = bpy.data.objects['ar_mesh']
-phar = bpy.data.objects['phar']
-tar = bpy.data.objects['tar']
-head = A.get_bone_head(tar)
-tail = A.get_bone_tail(tar)
-
-ar_mesh.data.vertices[0].co = head[0]
-ar_mesh.data.vertices[1].co = head[1]
-ar_mesh.data.vertices[2].co = tail[1]
-ar_mesh.data.vertices[3].co = tail[2]
-ar_mesh.data.vertices[4].co = tail[3]
-ar_mesh.data.update()
-C.co_to_shape(ar_mesh, co=None, key="Current")
-C.co_to_shape(ar_mesh, co=None, key="Target")
-C.co_to_shape(ar_mesh, co=None, key="Basis")
-
-
-ph = physics(ar_mesh)
-
-#ph.refresh()
-ph.eidx = get_edge_bone_idx(ar_mesh)
-ph.mesh_bone_idx = get_mesh_bone_idx(ar_mesh)
-ph.phar = phar
-ph.tar = tar
-
-
-
-
-install_handler(live=False, animated=True)
+if False:    
     
+    phar = bpy.data.objects['tar']
+    tar = bpy.data.objects['tar']
+    ph = physics(phar, tar)
+    
+    if False:
+        C.co_to_shape(phys_mesh, co=None, key="Current")
+        C.co_to_shape(phys_mesh, co=None, key="Target")
+        C.co_to_shape(phys_mesh, co=None, key="Basis")
 
 
-#if False:
-#    co = U.get_co(ar_mesh)
-#    ebidx = get_edge_bone_idx(ar_mesh)
-#    mesh_bone_idx = get_mesh_bone_idx(ar_mesh)
-#    bone_centers = A.get_bone_centers(phar)
-#    edge_centers = get_edge_centers(co, ebidx, scale=0.5)
-
-#    mesh_bone_co = co[mesh_bone_idx]
-
-#    print(np.round(edge_centers,3))
-#    print(np.round(bone_centers,3))
-#    print(np.round(bone_centers,5) - np.round(edge_centers,5))
-
-#    print(A.get_bone_location_world(phar))
-#    print(A.get_bone_head(phar))
-
-#    mesh_bone_co = co[mesh_bone_idx] - A.get_bone_head(phar)
-#    A.se.t_ar_quats_world(phar, quats=None, locations=co[mesh_bone_idx])
-#    #Q.set_bone_locations(phar, mesh_bone_co)
+    install_handler(live=False, animated=True)
