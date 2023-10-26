@@ -25,6 +25,8 @@ except:
 
 #### quaternions ####
 def get_ar_quats(ar, quats=None):
+    """Returns rotation relative to edit bone.
+    In other words: useless."""
     if quats is None:
         quats = np.empty((len(ar.pose.bones), 4), dtype=np.float32)
     ar.pose.bones.foreach_get('rotation_quaternion', quats.ravel())
@@ -40,26 +42,40 @@ def get_ar_quats_world(ar, quats=None):
         quats[i] = ar.pose.bones[i].matrix.to_quaternion()
 
 
+def get_ar_matrix_world(ar, m3=False):
+    """Returns whirled matrix."""
+    world_matrix = np.array([bo.matrix for bo in ar.pose.bones], dtype=np.float32)
+    if m3:
+        return world_matrix[:, :3, :3]
+    return world_matrix
+
+
 #### quaternions ####
 def set_ar_quats(ar, quats):
     ar.pose.bones.foreach_set('rotation_quaternion', quats.ravel())
 
 
 #### quaternions ####
-def set_ar_m3_world(ar, m3=None, locations=None):
+def set_ar_m3_world(ar, m3, locations=None, return_quats=False):
     """Sets the world rotation correctly
     in spite of parent bones. (and constraints??)"""
+    if return_quats:
+        quats = np.empty((m3.shape[0], 4), dtype=np.float32)
     for i in range(len(ar.pose.bones)):
         bpy.context.view_layer.update()
         arm = ar.pose.bones[i].matrix
         nparm = np.array(arm)
-        if m3 is not None:
-            #qte = quat_to_euler(quats[i], factor=1)        
-            nparm[:3, :3] = m3[i]
+        nparm[:3, :3] = m3[i]
         if locations is not None:
             nparm[:3, 3] = locations[i]
-        ar.pose.bones[i].matrix = MAT(nparm)
-
+        mat = MAT(nparm)
+        if return_quats:
+            quats[i] = mat.to_quaternion()
+        ar.pose.bones[i].matrix = mat
+    
+    if return_quats:    
+        return quats
+    
 
 #### quaternions ####
 def set_ar_quats_world(ar, quats=None, locations=None):
@@ -170,18 +186,17 @@ def set_bone_locations(ar, location, yz=None):
 #### armature ####    
 def update_bones(ar):
     ar.pose.bones[0].location = ar.pose.bones[0].location
-    
 
 
 #### armature ####    
-def get_relative_bones(ar):
+def get_relative_bones(ar, flatten=True, return_repeater=True):
     """Get the index relationships of
     bones by parent and child
     relationships."""
     
     # add an index property to each bone
     flat = []
-    repeater = []
+    repeater = []    
     for e, b in enumerate(ar.pose.bones):
         b['index'] = e
     
@@ -199,9 +214,82 @@ def get_relative_bones(ar):
             rel += [ch['index']]
         relationships += [rel]
     
+    if return_repeater:
+        if flatten:    
+            return flat, repeater
+        return relative, repeater
     #print(flat, "this is flat")
     #print(repeater, "this is repeater")
     return relationships
+
+
+
+def make_ar_mesh(ar):
+
+    relative, repeater = get_relative_bones(ar)
+    head = get_bone_head(ar)
+    tail = get_bone_tail(ar)
+        
+    for bo in ar.pose.bones:
+        bo['head'] = None
+        bo['tail'] = None
+        edges = []
+    
+    vert_count = 0
+    co = []
+    index = []
+    for e, bo in enumerate(ar.pose.bones):
+        edge = []
+        
+        if bo.parent is not None:
+            if bo.parent['tail'] is not None:
+                edge = bo.parent['tail']
+                bo['head'] = bo.parent['tail']
+            if bo.parent is None:
+                bo['head'] = vert_count
+                vert_count += 1
+                index += [vert_count]
+                co += [head[bo['index']]]
+                
+        if bo.parent is None:
+            bo['head'] = vert_count
+            vert_count += 1
+            index += [vert_count]
+            co += [head[bo['index']]]
+            
+        if len(bo.children) == 0:
+            bo['tail'] = vert_count
+            vert_count += 1
+            index += [vert_count]
+            co += [tail[bo['index']]]
+        
+        if len(bo.children) != 0:
+            heads = np.array([ch['head'] for ch in bo.children])
+            
+            if np.any(heads != None):
+                idx = heads[heads != None][0]
+                for ch in bo.children:
+                    ch['head'] = idx
+                    bo['tail'] = idx
+            
+            if np.all(heads == None):
+                bo['tail'] = vert_count
+                vert_count += 1
+                index += [vert_count]
+                co += [tail[bo['index']]]
+        
+        edge = [bo['head'], bo['tail']]
+        edges += [edge]
+    
+    ob = None
+    name = ar.name + "_CE_physics_mesh"
+    if name in bpy.data.objects:
+        ob = bpy.data.objects[name]
+        if ob.data.is_editmode:
+            bpy.ops.object.mode_set()
+        
+    phys_mesh = U.link_mesh(co, edges, faces=[], name=name, ob=ob)
+    return phys_mesh, edges, co, index, relative, repeater
 
 
 if False:
