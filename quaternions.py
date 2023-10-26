@@ -16,6 +16,14 @@ except:
     importlib.reload(U)
 
 NQ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+BNQ = np.array([0.7071067690849304, 0.7071067690849304, 0.0, 0.0], dtype=np.float32)
+BNM3 = np.array([[ 1.0,  0.0,  0.0],
+                 [ 0.0,  0.0, -1.0],
+                 [ 0.0,  1.0, -0.0]], dtype=np.float32)
+
+
+INV = np.linalg.inv(BNM3)
+print(INV @ BNM3)
 
 #### quaternions ####
 def get_quat(rad, axis, normalize=False):
@@ -32,14 +40,16 @@ def get_quats(rad, axis, normalize=False, out=None):
     if normalize:    
         axis = axis / np.sqrt(np.einsum('ij,ij->i', axis, axis))[:, None]
     theta = (rad * 0.5)
-    if out is not None:
-        out[:, 0] = np.cos(theta)
-        out[:, 1:] = axis * np.sin(theta)[:, None]
-        out[np.any(np.isnan(out), axis=1)] = NQ
-        return
-    w = np.cos(theta)
-    q_axis = axis * np.sin(theta)[:, None]
-    return w, q_axis
+    if out is None:
+        out = np.empty((rad.shape[0], 4), dtype=np.flaot32)
+
+    out[:, 0] = np.cos(theta)
+    out[:, 1:] = axis * np.sin(theta)[:, None]
+    out[np.any(np.isnan(out), axis=1)] = NQ
+    dot = np.einsum('ij,ij->i', out, out)
+    not_normal = np.round(dot, 4) != 1
+    print(np.round(dot, 4), "ones?")
+    return out
 
 
 def get_edge_match_quats(e1, e2, out=None):
@@ -53,8 +63,8 @@ def get_edge_match_quats(e1, e2, out=None):
     ue2 = U.u_vecs(e2_vecs)
     dots = U.compare_vecs(ue1, ue2)
     angle = np.arccos(dots)
-    axis = np.cross(ue1, ue2)
-    print(axis, "axis here")
+    print(angle, "angle")
+    axis = np.cross(ue2, ue1)
     if out is not None:
         get_quats(angle, axis, normalize=True, out=out)
         return
@@ -69,14 +79,29 @@ def extract_quat_angle(q):
 
 
 #### quaternions ####
-def partial_quat(q, factor):
+def partial_quat(q, factor=0.5):
     """Factor can be an array"""
     angle = extract_quat_angle(q)
     angle *= factor
     if len(q.shape) == 1:
         part_q = get_quat(angle, q[1:])
-        return part_q    
-    part_q = get_quats(angle, q[:, 1:])
+        return part_q
+    part_q = get_quats(angle, q[:, 1:], out=q)
+    return part_q
+
+
+#def crude_reduce(q, factor=0.98):
+#    q[:, 1:] *= factor
+#    q /= np.sqrt(np.einsum('ij,ij->i', q, q))[:, None]
+#    return q
+
+
+#def partial_quats(qs, factor=0.5, out=None):
+#    if out is None:
+#        out = np.empty_like(qs)
+#    for i in range(qs.shape[0]):
+#        out[i] = partial_quat(qs[i], factor)
+#    return out
 
 
 #### quaternions ####
@@ -89,12 +114,47 @@ def q_rotate(co, w, axis):
     return co + (move1 + move2) * 2
 
 
+def rotate_m3(m3, quat):
+    w = quat[0]
+    axis = quat[1:]
+    m3 = q_rotate(m3.T, w, axis)
+    return m3.T
+
+
+def rotate_m3s(m3s, quat, out=None):
+    if out is None:
+        out = np.empty_like(m3s)
+    for i in range(m3s.shape[0]):
+        w = quat[i][0]
+        axis = -quat[i][1:]
+        rm3 = q_rotate(m3s[i].T, w, axis)
+        out[i] = rm3.T
+    return out
+
+
+def rotate_matrices(matrices, quats):
+    ms = matrices.shape
+    cm = np.empty((ms[0], 3, 3), dtype=np.float32)
+    for i in range(matrices.shape[0]):
+        co = matrices[i][:3, :3].T
+        w = quats[i][0]
+        axis = -quats[i][1:]
+        m3 = q_rotate(co, w, axis)
+        cm[i] = m3.T
+    return cm
+
+
 #### quaternions ####
-def quat_to_euler(q, factor=1, m3=None):
+def quat_to_m3(q, m3=None):
     if m3 is None:
         m3 = np.eye(3)
-    rot_m3 = q_rotate(m3.T, q[0], q[1:] * factor)
-    return rot_m3.T # or is it m3.T?
+    rot_m3 = q_rotate(m3.T, q[0], q[1:])
+    return rot_m3.T # is it m3.T or just m3?
+
+
+def m3_multiply(m31, m32):
+    mult = m31.T @ m32.T
+    return mult.T
 
 
 if False:
@@ -116,34 +176,39 @@ def quaternion_add(w1, v1, w2, v2):
 
 
 #### quaternions ####    
-def add_quats(q1, q2, multi=False, origin=None, head_tail=None, normalize=False):
+def add_quats(q1, q2, normalize=False, out=None):
     """Add q1 and q2. ([w, x, y, z])."""
     
-    if multi:
-        v1 = q1[:, 1:]
-        v2 = q2[:, 1:]
-        w1 = q1[:, 0][:, None]
-        w2 = q2[:, 0][:, None]
-        v_result = np.cross(v1, v2) + w1 * v2 + w2 * v1
-        w_result = w1 * w2 - (np.einsum('ij,ij->i', v1, v2))[:, None]
-        q2[:, 0] = w_result.ravel()
-        q2[:, 1:] = v_result
-        result = q2
-        
-    else:
-        v1 = q1[1:]
-        v2 = q2[1:]
-        w1 = q1[0]
-        w2 = q2[0]
+    if out is None:
+        out = np.empty_like(q1)
 
-        v_result = np.cross(v1, v2) + w1 * v2 + w2 * v1
-        w_result = w1 * w2 - (v1 @ v2)
-        result = np.array([w_result, *v_result])
+    for i in range(q1.shape[0]):
+        w1 = q1[i][0]
+        w2 = q2[i][0]
+        v1 = q1[i][1:]
+        v2 = q2[i][1:]
         
+        w, axis = quaternion_add(w1, v1, w2, v2)
+        out[i][0] = w
+        out[i][1:] = axis
+        
+    return out    
+
+
+    v1 = q1[:, 1:]
+    v2 = q2[:, 1:]
+    w1 = q1[:, 0][:, None]
+    w2 = q2[:, 0][:, None]
+    v_result = np.cross(v1, v2) + w1 * v2 + w2 * v1
+    w_result = w1 * w2 - (np.einsum('ij,ij->i', v1, v2))[:, None]
+        
+    out[:, 0] = w_result.ravel()
+    out[:, 1:] = v_result
+            
     if normalize:    
-        result /= np.linalg.norm(result)
+        out /= np.linalg.norm(result)[:, None]
 
-    return result
+    return out
 
 
 #### quaternions #### 
@@ -188,24 +253,22 @@ def get_quat_from_perp_vecs(v1, v2):
 
 #### quaternions ####
 def quaternion_subtract(w1, v1, w2, v2):
-    """Get the quaternion that rotates one quaternion to another"""
+    """Get the quaternion that rotates q1 to match q2"""
     w = w1 * w2 - np.dot(v1, v2)
     v = w1 * v2 + w2 * v1 + np.cross(v1, v2)
     return w, -v
 
 
 def quaternions_subtract(q1, q2, out=None):
-    """Get the quaternion that rotates one quaternion to another"""
-    if out is not None:
-        out[:, 0] = (q1[:, 0] * q2[:, 0]) - np.einsum('ij,ij->i', q1[:, 1:], q2[:, 1:])
-        v = (q1[:, 0][:, None] * q2[:, 1:]) + (q2[:, 0][:, None] * q1[:, 1:]) + np.cross(q1[:, 1:], q2[:, 1:])
-        out[:, 1:] = -v
-        return
-    #w = w1 * w2 - np.dot(v1, v2)
-    w = (q1[:, 0] * q2[:, 0]) - np.einsum('ij,ij->i', q1[:, 1:], q2[:, 1:])
-    #v = w1 * v2 + w2 * v1 + np.cross(v1, v2)
+    """Get the quaternions that rotate q1 to match q2"""
+    if out is None:
+        out = np.empty_like(q1)
+    
+    out[:, 0] = (q1[:, 0] * q2[:, 0]) - np.einsum('ij,ij->i', q1[:, 1:], q2[:, 1:])
     v = (q1[:, 0][:, None] * q2[:, 1:]) + (q2[:, 0][:, None] * q1[:, 1:]) + np.cross(q1[:, 1:], q2[:, 1:])
-    return w, -v
+    #out[:, 1:] = -v
+    out[:, 1:] = -v
+    return out
 
 # ----- end quaternions ----- #
 
