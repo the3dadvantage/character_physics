@@ -14,6 +14,13 @@ def flatten_list(li, depth=1):
     return li
 
 
+# python
+def split_float(value):
+    int_part = int(value)
+    decimal = value - int_part
+    return int_part, decimal
+
+
 #=======================#
 # BMESH ----------------#
 #=======================#
