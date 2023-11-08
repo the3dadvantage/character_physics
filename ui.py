@@ -59,6 +59,12 @@ class CePropsObject(bpy.types.PropertyGroup):
         default=0.98,
     )
 
+    angular_force: bpy.props.FloatProperty(
+        name="Angular Force",
+        description="global angular strength",
+        default=3.0,
+    )
+
     animated: bpy.props.BoolProperty(
         name="Animated",
         description="Runs physics when animation is running",
@@ -88,25 +94,47 @@ class CePropsScene(bpy.types.PropertyGroup):
 #=======================#
 # OPERATORS ------------#
 #=======================#
-def rig_setup(ar):
-    print(ar.type, ": Should be an armature")
-    if not ar.type == 'ARMATURE':
-        print("select and armature goofball")
+def rig_setup():
+    target_rig = bpy.context.object
+    print(target_rig.type, ": Should be an armature")
+    if not target_rig.type == 'ARMATURE':
+        print("select an armature goofball")
         return
+  
+    phr = None
+    selected = [i for i in bpy.context.selected_objects if i != target_rig]
+    if len(selected) == 1:
+        phr = selected[0]
     
-    phar = bpy.context.object
-    tar = bpy.context.object
-    ph = E.physics(phar, tar)
-    print("Warning! Set a global physics object")
-    E.ph = ph
-    mesh = ph.phys_mesh
-    M = phar.matrix_world
-    mesh.matrix_world = M
+    physics_rig = bpy.context.object    
+    if phr is not None:
+        physics_rig = phr
+
+    ph = E.physics(physics_rig, target_rig)
+    #print("Warning! Set a global physics object")
+    #E.ph = ph
+    #look for ph as global in E    
     
-    live = phar.Ce_props.live
-    animated = phar.Ce_props.animated
+    M = physics_rig.matrix_world
+    ph.physics_mesh.matrix_world = M
+    
+    live = physics_rig.Ce_props.live
+    animated = physics_rig.Ce_props.animated
     E.install_handler(live=live, animated=animated)
 
+    physics_rig["physics_mesh"] = ph.physics_mesh.id_data
+    physics_rig["x_mesh"] = ph.x_mesh.id_data
+    physics_rig["target_rig"] = target_rig.id_data
+    target_rig["physics_mesh"] = ph.physics_mesh.id_data
+    target_rig["x_mesh"] = ph.x_mesh.id_data
+    target_rig["physics_rig"] = physics_rig.id_data
+    ph.physics_mesh.id_data["target_rig"] = target_rig.id_data
+    ph.physics_mesh.id_data["physics_rig"] = physics_rig.id_data
+    ph.physics_mesh.id_data["x_mesh"] = ph.x_mesh.id_data
+    ph.x_mesh["target_rig"] = target_rig.id_data
+    ph.x_mesh["physics_rig"] = physics_rig.id_data
+    ph.x_mesh["physics_mesh"] = ph.physics_mesh.id_data
+    
 
 class CeRigSetup(bpy.types.Operator):
     """Setup physics data for rig."""
@@ -116,47 +144,76 @@ class CeRigSetup(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        ar = bpy.context.object
-        rig_setup(ar)
+        print("when child bones have the same parent then need to be evaluated as relative to each other.")
+        rig_setup()
         return {'FINISHED'}
 
 
-def rig_reset(ob):
-    ar = None
-    phys_mesh = None
+def reset_pose(ar):
+    loc = (0.0, 0.0, 0.0)    
+    rot = (1.0, 0.0, 0.0, 0.0)
+    scale = (1.0, 1.0, 1.0)
+    for bo in ar.pose.bones:
+        bo.location = loc
+        bo.rotation_quaternion = rot
+        bo.scale = scale
+        
+
+def rig_reset():
+    ph = E.DATA['ph']
+    ob = bpy.context.object
+    if ob is None:
+        print("No active object")
+        return
     
-    if ob.type == "ARMATURE":
-        ar = ob
-        if "ce_phys_mesh" in ar:
-            phys_mesh = ar["ce_phys_mesh"]
+    physics_mesh = None
+    target_rig = None
+    physics_rig = None
+    x_mesh = None
     
-    if ob.type == "MESH":
-        phys_mesh = ob
-        if "ce_rig" in ob:
-            ar = ob["ce_rig"]
+    if "physics_mesh" in ob:
+        physics_mesh = ob["physics_mesh"]
+    if "target_rig" in ob:
+        target_rig = ob["target_rig"]    
+    if "physics_rig" in ob:
+        physics_rig = ob["physics_rig"]
+    if "x_mesh" in ob:
+        x_mesh = ob["x_mesh"]
     
-    if ar is not None:
-        loc = (0.0, 0.0, 0.0)    
-        rot = (1.0, 0.0, 0.0, 0.0)
-        scale = (1.0, 1.0, 1.0)
-        for bo in ar.pose.bones:
-            bo.location = loc
-            bo.rotation_quaternion = rot
-            bo.scale = scale
+    if physics_mesh is None:
+        physics_mesh = ob
+    if target_rig is None:
+        target_rig = ob
+    if physics_rig is None:
+        physics_rig = ob    
+    if x_mesh is None:
+        x_mesh = ob
+            
+    reset_pose(target_rig)
+    reset_pose(physics_rig)
     
-    if phys_mesh is not None:
-        C.co_to_shape(phys_mesh, co=None, key="Current")
-        C.co_to_shape(phys_mesh, co=None, key="Target")
-        C.co_to_shape(phys_mesh, co=None, key="Basis")
+    if x_mesh is not None:
+        C.co_to_shape(x_mesh, co=None, key="Current")
+        C.co_to_shape(x_mesh, co=None, key="Target")
+        C.co_to_shape(x_mesh, co=None, key="Basis")
+
+        vc = len(x_mesh.data.vertices)
+        ph.x_co = np.empty((vc, 3), dtype=np.float32)
+        C.get_shape_co_mode(ob=x_mesh, co=ph.x_co, key='Current')
     
-        ph = E.DATA['ph']
-        vc = len(phys_mesh.data.vertices)
+    if physics_mesh is not None:
+        C.co_to_shape(physics_mesh, co=None, key="Current")
+        C.co_to_shape(physics_mesh, co=None, key="Target")
+        C.co_to_shape(physics_mesh, co=None, key="Basis")
+        
+        vc = len(physics_mesh.data.vertices)
         ph.current_co = np.empty((vc, 3), dtype=np.float32)
-        C.get_shape_co_mode(ob=phys_mesh, co=ph.current_co, key='Current')
+        C.get_shape_co_mode(ob=physics_mesh, co=ph.current_co, key='Current')
         ph.velocity = np.zeros((vc, 3), dtype=np.float32)
         ph.vel_start = np.empty((vc, 3), dtype=np.float32)
         ph.vel_start[:] = ph.current_co
-    
+        ph.physics_m3 = A.get_ar_matrix_world(target_rig, m3=True)
+
 
 class CeRigReset(bpy.types.Operator):
     """Clear location, rotation, and scale of rig"""
@@ -166,8 +223,7 @@ class CeRigReset(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        ob = bpy.context.object
-        rig_reset(ob)
+        rig_reset()
         return {'FINISHED'}
 
 
@@ -195,6 +251,7 @@ class PANEL_PT_Character_Engine(bpy.types.Panel):
         col.label(text="Forces")
         col.prop(bpy.context.object.Ce_props, "gravity", text="Gravity")
         col.prop(bpy.context.object.Ce_props, "velocity", text="Velocity")
+        col.prop(bpy.context.object.Ce_props, "angular_force", text="Angular Force")
 
         col.label(text="Future")
         col.prop(bpy.context.scene.Ce_props, "test", text="Test Callback")
