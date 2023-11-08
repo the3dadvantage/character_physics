@@ -55,6 +55,19 @@ def set_ar_quats(ar, quats):
     ar.pose.bones.foreach_set('rotation_quaternion', quats.ravel())
 
 
+def set_b_matricies(ar, bm3s, locations=None):
+    for i in range(len(ar.pose.bones)):
+        bpy.context.view_layer.update()
+        arm = ar.pose.bones[i].matrix
+        nparm = np.array(arm)
+        nparm[:3, :3] = bm3s[i]
+        if locations is not None:
+            nparm[:3, 3] = locations[i]
+        mat = MAT(nparm)
+        ar.pose.bones[i].matrix = mat    
+    bpy.context.view_layer.update()
+
+
 #### quaternions ####
 def set_ar_m3_world(ar, m3, locations=None, return_quats=False):
     """Sets the world rotation correctly
@@ -73,6 +86,7 @@ def set_ar_m3_world(ar, m3, locations=None, return_quats=False):
             quats[i] = mat.to_quaternion()
         ar.pose.bones[i].matrix = mat
     
+    bpy.context.view_layer.update()
     if return_quats:    
         return quats
     
@@ -194,6 +208,8 @@ def get_relative_bones(ar, flatten=True, return_repeater=True):
     bones by parent and child
     relationships."""
     
+    siblings=True # gets relative children by common parent
+    
     # add an index property to each bone
     flat = []
     repeater = []    
@@ -212,14 +228,19 @@ def get_relative_bones(ar, flatten=True, return_repeater=True):
             flat += [ch['index']]
             repeater += [bo['index']]
             rel += [ch['index']]
+        if siblings:
+            if bo.parent is not None:
+                brothers = [b for b in bo.parent.children if b != bo]
+                for br in brothers:
+                    repeater += [bo['index']]
+                    rel += [br['index']]
+                    flat += [br['index']]
         relationships += [rel]
     
     if return_repeater:
         if flatten:    
             return flat, repeater
         return relative, repeater
-    #print(flat, "this is flat")
-    #print(repeater, "this is repeater")
     return relationships
 
 
@@ -292,6 +313,23 @@ def make_ar_mesh(ar):
     return phys_mesh, edges, co, index, relative, repeater
 
 
+
+def build_xz_cross_thingy(ph, factor=0.5):
+
+    mesh_bone_co = ph.current_co[ph.mesh_bone_idx]
+    x_vecs = ph.physics_m3[:, :, 0]
+    x_edges = np.empty((x_vecs.shape[0], 2, 3), dtype=np.float32)
+    x_edges[:, 1] = mesh_bone_co + (x_vecs * factor)
+    x_edges[:, 0] = mesh_bone_co - (x_vecs * (1 - factor))
+    eidx = np.arange(x_edges.shape[0] * 2, dtype=np.int32)
+    eidx.shape = (x_edges.shape[0], 2)
+    x_edges.shape = (x_edges.shape[0] * 2, 3)    
+    x_mesh = U.link_mesh(x_edges, eidx, faces=[], name=ph.physics_rig.name + "_x_edges")
+    x_mesh.matrix_world = ph.physics_rig.matrix_world
+    
+    return x_mesh, eidx, x_edges
+
+
 if False:
     head = get_bone_head(ar)
     tail = get_bone_tail(ar)
@@ -314,8 +352,6 @@ class Rigs():
     
     def get_target_data(self):
         get_ar_quats_world(self.target_ar, self.t_quats)
-        
-        print(self.t_quats[0])
         ee.rotation_quaternion = self.t_quats[0]
         
 
