@@ -21,9 +21,8 @@ BNM3 = np.array([[ 1.0,  0.0,  0.0],
                  [ 0.0,  0.0, -1.0],
                  [ 0.0,  1.0, -0.0]], dtype=np.float32)
 
-
 INV = np.linalg.inv(BNM3)
-print(INV @ BNM3)
+# print(INV @ BNM3)
 
 #### quaternions ####
 def get_quat(rad, axis, normalize=False):
@@ -41,32 +40,51 @@ def get_quats(rad, axis, normalize=False, out=None):
         axis = axis / np.sqrt(np.einsum('ij,ij->i', axis, axis))[:, None]
     theta = (rad * 0.5)
     if out is None:
-        out = np.empty((rad.shape[0], 4), dtype=np.flaot32)
+        out = np.empty((rad.shape[0], 4), dtype=np.float32)
 
     out[:, 0] = np.cos(theta)
     out[:, 1:] = axis * np.sin(theta)[:, None]
     out[np.any(np.isnan(out), axis=1)] = NQ
     dot = np.einsum('ij,ij->i', out, out)
     not_normal = np.round(dot, 4) != 1
-    print(np.round(dot, 4), "ones?")
     return out
 
 
-def get_edge_match_quats(e1, e2, out=None):
+def get_edge_match_quats(v1, v2, out, factor=None):
+    """Get the quats that will rotate
+    v1 to match v2"""
+    dots = U.compare_vecs(v1, v2)
+    angle = np.arccos(dots)
+    if factor is not None:
+        angle *= factor
+    axis = np.cross(v2, v1)
+    out = get_quats(angle, axis, normalize=True, out=out)
+    return out
+    
+
+def _get_edge_match_quats(e1=None, e2=None, ue1=None, ue2=None, out=None, factor=None, r_ue1=False):
     """e1 and e2 are Nx2x3.
     Generate the quats that
     would rotate the e1, or
     bones, to match e2"""
-    e1_vecs = e1[:, 1] - e1[:, 0]
-    e2_vecs = e2[:, 1] - e2[:, 0]
-    ue1 = U.u_vecs(e1_vecs)
-    ue2 = U.u_vecs(e2_vecs)
+    if ue1 is None:    
+        e1_vecs = e1[:, 1] - e1[:, 0]
+        ue1 = U.u_vecs(e1_vecs)
+    if ue2 is None:
+        e2_vecs = e2[:, 1] - e2[:, 0]
+        ue2 = U.u_vecs(e2_vecs)
+    
+    print(ue1.shape, "ue1 shape")
+    print(ue2.shape, "ue2 shape")
     dots = U.compare_vecs(ue1, ue2)
     angle = np.arccos(dots)
-    print(angle, "angle")
+    if factor is not None:
+        angle *= factor
     axis = np.cross(ue2, ue1)
     if out is not None:
         get_quats(angle, axis, normalize=True, out=out)
+        if r_ue1:
+            return ue1
         return
     w, quax = get_quats(angle, axis, normalize=True)
     
@@ -90,18 +108,22 @@ def partial_quat(q, factor=0.5):
     return part_q
 
 
-#def crude_reduce(q, factor=0.98):
-#    q[:, 1:] *= factor
-#    q /= np.sqrt(np.einsum('ij,ij->i', q, q))[:, None]
-#    return q
+def m3_to_b_quats(m3, out=None):
+    """Convert an m3 array to list
+    of blender quaternion types."""
+    b_quats = []
+    for m in m3:
+        b_quats += [MAT(m).to_quaternion()]
+    return b_quats
 
 
-#def partial_quats(qs, factor=0.5, out=None):
-#    if out is None:
-#        out = np.empty_like(qs)
-#    for i in range(qs.shape[0]):
-#        out[i] = partial_quat(qs[i], factor)
-#    return out
+def average_b_quat(quats):
+    """Adds blender quaternions
+    resulting in average quat"""
+    sq = quats[0]
+    for q in quats[1:]:
+        sq = sq + q
+    return sq
 
 
 #### quaternions ####
@@ -123,7 +145,8 @@ def rotate_m3(m3, quat):
 
 def rotate_m3s(m3s, quat, out=None):
     if out is None:
-        out = np.empty_like(m3s)
+        #out = np.empty_like(m3s)
+        out = m3s
     for i in range(m3s.shape[0]):
         w = quat[i][0]
         axis = -quat[i][1:]
