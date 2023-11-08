@@ -79,3 +79,52 @@ def get_edge_centers(co, eidx, scale=0.5):
     head = co[eidx[:, 0]]
     vec = (co[eidx[:,1]] - head) * scale
     return head + vec
+
+
+# geometry
+def compare_vecs(v1, v2):
+    return np.einsum('ij,ij->i', v1, v2)
+
+
+def measure_vecs(vecs):
+    return np.sqrt(np.einsum('ij,ij->i', vecs, vecs))
+
+
+def u_vecs(vecs):
+    u_vecs = vecs / np.sqrt(np.einsum('ij,ij->i', vecs, vecs))[:, None]
+    return u_vecs
+
+
+def vec_to_vec_pivot(edges, vecs, factor=0.5):
+    """Rotate edges to match vecs respecting
+    a pivot defined by a factor that plots
+    the pivot along the edge. The factor
+    should be defined by the bone center
+    of mass.
+    !!! Assumes vecs are normalized !!!"""
+    
+    #need to rotate halfway. 
+    edge_vecs = (edges[:, 1] - edges[:, 0])
+    #u_edge_vecs = u_vecs(edge_vecs)
+    #halfway = (vecs - edge_vecs) * 0.5
+    #halv_vecs = u_edge_vecs + halfway
+    #vecs = u_vecs(halv_vecs)
+    
+    rot_edges = np.empty_like(edges)
+    vecs_1 = edge_vecs * factor
+    vecs_2 = edge_vecs * (1 - factor)
+    edge_mid = edges[:, 0] + vecs_1
+    dist_1 = measure_vecs(vecs_1)[:, None]
+    dist_2 = measure_vecs(vecs_2)[:, None]
+    rot_edges[:, 0] = edge_mid - (vecs * dist_1)
+    rot_edges[:, 1] = edge_mid + (vecs * dist_2)
+    return rot_edges
+
+
+# geometry
+def closest_points_edges(vecs, origins, p):
+    '''Returns the location of the points on the edge'''
+    vec2 = p - origins
+    d = np.einsum('ij,ij->i', vecs, vec2) / np.einsum('ij,ij->i', vecs, vecs)
+    cp = origins + vecs * d[:, None]
+    return cp, d
