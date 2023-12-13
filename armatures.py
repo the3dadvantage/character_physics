@@ -244,7 +244,6 @@ def get_relative_bones(ar, flatten=True, return_repeater=True):
     return relationships
 
 
-
 def make_ar_mesh(ar):
 
     relative, repeater = get_relative_bones(ar)
@@ -313,6 +312,112 @@ def make_ar_mesh(ar):
     return phys_mesh, edges, co, index, relative, repeater
 
 
+def make_mix_mesh(ar, ph):
+
+    #relative, repeater = get_relative_bones(ar)
+    head = get_bone_head(ar)
+    tail = get_bone_tail(ar)
+        
+    for bo in ar.pose.bones:
+        bo['head'] = None
+        bo['tail'] = None
+        edges = []
+    
+    vert_count = 0
+    co = []
+    index = []
+    for e, bo in enumerate(ar.pose.bones):
+        edge = []
+        
+        if bo.parent is not None:
+            if bo.parent['tail'] is not None:
+                edge = bo.parent['tail']
+                bo['head'] = bo.parent['tail']
+            if bo.parent is None:
+                bo['head'] = vert_count
+                vert_count += 1
+                index += [vert_count]
+                co += [head[bo['index']]]
+                
+        if bo.parent is None:
+            bo['head'] = vert_count
+            vert_count += 1
+            index += [vert_count]
+            co += [head[bo['index']]]
+            
+        if len(bo.children) == 0:
+            bo['tail'] = vert_count
+            vert_count += 1
+            index += [vert_count]
+            co += [tail[bo['index']]]
+        
+        if len(bo.children) != 0:
+            heads = np.array([ch['head'] for ch in bo.children])
+            
+            if np.any(heads != None):
+                idx = heads[heads != None][0]
+                for ch in bo.children:
+                    ch['head'] = idx
+                    bo['tail'] = idx
+            
+            if np.all(heads == None):
+                bo['tail'] = vert_count
+                vert_count += 1
+                index += [vert_count]
+                co += [tail[bo['index']]]
+        
+        edge = [bo['head'], bo['tail']]
+        edges += [edge]
+    
+    ob = None
+    name = ar.name + "_CE_physics_mesh"
+    if name in bpy.data.objects:
+        ob = bpy.data.objects[name]
+        if ob.data.is_editmode:
+            bpy.ops.object.mode_set()
+    
+    mesh_bone_idx = np.array(edges, dtype=np.int32)[:, 0]
+    mesh_bone_tail_idx = np.array(edges, dtype=np.int32)[:, 1]
+    npco = np.array(co, dtype=np.float32)
+    y_vidx = np.arange(npco.shape[0])    
+    # x cross thingy
+    factor = 0.5
+    mix_vidx = np.arange(npco.shape[0])
+    mesh_bone_co = npco[mesh_bone_idx]
+    mesh_tails_co = npco[mesh_bone_tail_idx]
+    mid_vecs = (mesh_tails_co - mesh_bone_co) * factor
+    middles = mesh_bone_co + mid_vecs
+    
+    x_vecs = ph.physics_m3[:, :, 0]
+    x_edges = np.empty((x_vecs.shape[0], 2, 3), dtype=np.float32)
+    x_edges[:, 1] = middles + (x_vecs * factor)
+    x_edges[:, 0] = middles - (x_vecs * (1 - factor))
+    eidx = np.arange(x_edges.shape[0] * 2, dtype=np.int32)
+    eidx.shape = (x_edges.shape[0], 2)
+    x_edges.shape = (x_edges.shape[0] * 2, 3)    
+    
+    co_with_x = np.array(co, dtype=np.float32).tolist() + x_edges.tolist()
+    edges_with_x = edges + (eidx + len(co)).tolist() 
+    x_start_eidx = np.copy(eidx)
+    x_eidx = eidx + len(co)
+    x_vidx = x_eidx.ravel()
+    
+    # make extra edges
+    lateral_edges = []
+    for i, e in enumerate(edges):
+        l1 = [e[0], x_eidx[i][0]]
+        l2 = [e[0], x_eidx[i][1]]
+        l3 = [e[1], x_eidx[i][0]]
+        l4 = [e[1], x_eidx[i][1]]
+        lateral_edges += [l1, l2, l3, l4]
+    
+    with_lats = edges_with_x + lateral_edges
+    name = ph.target_rig.name + "_physics_mesh"
+    mix_mesh = U.link_mesh(co_with_x, edges=with_lats, faces=[], name=name)# name=ph.physics_rig.name + "_mix_mesh")
+    mix_mesh.matrix_world = ph.physics_rig.matrix_world
+
+    return mix_mesh, edges, x_eidx, x_start_eidx, mix_vidx, x_vidx, y_vidx
+    
 
 def build_xz_cross_thingy(ph, factor=0.5):
 
