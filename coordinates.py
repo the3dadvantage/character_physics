@@ -103,12 +103,7 @@ def vec_to_vec_pivot(edges, vecs, factor=0.5):
     of mass.
     !!! Assumes vecs are normalized !!!"""
     
-    #need to rotate halfway. 
     edge_vecs = (edges[:, 1] - edges[:, 0])
-    #u_edge_vecs = u_vecs(edge_vecs)
-    #halfway = (vecs - edge_vecs) * 0.5
-    #halv_vecs = u_edge_vecs + halfway
-    #vecs = u_vecs(halv_vecs)
     
     rot_edges = np.empty_like(edges)
     vecs_1 = edge_vecs * factor
@@ -116,6 +111,7 @@ def vec_to_vec_pivot(edges, vecs, factor=0.5):
     edge_mid = edges[:, 0] + vecs_1
     dist_1 = measure_vecs(vecs_1)[:, None]
     dist_2 = measure_vecs(vecs_2)[:, None]
+
     rot_edges[:, 0] = edge_mid - (vecs * dist_1)
     rot_edges[:, 1] = edge_mid + (vecs * dist_2)
     return rot_edges
