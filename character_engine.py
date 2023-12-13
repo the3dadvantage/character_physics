@@ -4,9 +4,7 @@ import numpy as np
 import sys
 import os
 import importlib
-from mathutils import Matrix as MAT
-from scipy.linalg import logm, expm
-from scipy.spatial.transform import Rotation as R
+import time
 
 DATA = {}
 
@@ -30,33 +28,34 @@ except:
     importlib.reload(C)
     importlib.reload(A)
 
+r_print = U.r_print
 
 print()
 print("=== reload ===")
 print()
 
 
-def get_stretch_springs(ph):
+def get_stretch_springs_mix(ph):
     
     face = False
     if face:    
         fv = [list(set(U.flatten_list([[v.index
             for v in f.verts if v.index != ve.index]
-                for f in ve.link_faces]))) for ve in ph.obm.verts]
+                for f in ve.link_faces]))) for ve in ph.mix_obm.verts]
     else:
         fv = [[e.other_vert(ve).index
             for e in ve.link_edges]
-                for ve in ph.obm.verts]
+                for ve in ph.mix_obm.verts]
     
     stretch_idx = []
     stretch_repeat = []
     stretch_counts = []
-        
+    
     for e, f in enumerate(fv):
         stretch_idx += f
         stretch_repeat += ([e] * len(f))
         stretch_counts += [len(f)]
-
+    
     stretch_idx = np.array(stretch_idx, dtype=np.int32)
     stretch_repeat = np.array(stretch_repeat, dtype=np.int32)
     stretch_counts = 1 / np.array(stretch_counts, dtype=np.int32)[:, None]
@@ -64,360 +63,262 @@ def get_stretch_springs(ph):
     return stretch_idx, stretch_repeat, stretch_counts
 
 
-def r_print(r, m=''):
-    print()
-    print(m + " --------")
-    if isinstance(r, list):
-        for v in r:
-            print(np.round(v, 3), m)
-        return        
-    print(np.round(r, 3), m)
-
-
-def box_corner_normal_reset(corners, co):
-    '''The theory is to make the corner
-    of a box and check to make sure it's not
-    inside out. Trouble is its center of
-    mass would make for lopsided rotation.
-    How to fix this... hmm...'''
-    U.get_tri_normals(tco, normalize=True)
-    
-
-import time
-T = time.time()
-
-
-def collision_test(ph):
-    ph.collided[:] = ph.current_co[:, 2] < 0.0
-    ph.current_co[:, 2][ph.collided] = 0.0
-    ph.vel_start[:, 2][ph.collided] = 0.0
-    ph.velocity[ph.collided] = 0.0
-    #ph.current_co[:, :2][ph.collided] = ph.vel_start[:, :2][ph.collided]
-    ph.pinned[ph.collided] = True
-    #ph.current_co[:, 2][ph.collided] = 0.0
-
-
-def replot_orthagonal(ph):
-
-    ### ===== X THINGY MID MEAN ===== ###
-    #if True:
-    if False:
-        e_vecs = ph.x_co[1::2] - ph.x_co[::2]
-        ph.x_mid = ph.x_co[::2] + (e_vecs * ph.x_factor)
-        mix_mid = (ph.current_co[ph.mesh_bone_idx] + ph.x_mid) * 0.5
-        ph.x_mid = mix_mid
-        ph.current_co[ph.mesh_bone_idx] = mix_mid
-    
-    # update pinned:    
-    #ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]
-    #ph.x_mid = ph.current_co[ph.mesh_bone_idx]
-
-    ### ===== MAKE X ORTHAGONAL TO Y ===== ###
-    eco = ph.current_co[ph.eidx]
-    vecs = eco[:, 1] - eco[:, 0]
-    
-    cp, d = C.closest_points_edges(vecs=vecs, origins=ph.x_mid, p=ph.x_co[::2])
-    cp_vec = cp - ph.x_co[::2]
-    ucp = C.u_vecs(cp_vec)
-
-    ph.x_co[::2] = ph.x_mid - (ucp * ph.x_factor)
-    ph.x_co[1::2] = ph.x_mid + (ucp * (1 - ph.x_factor))    
-    
-
 def linear_solve(ph):
-    
-    ph.stretch_co[:] = ph.current_co[ph.stretch_idx]
-    ph.repeat_co[:] = ph.current_co[ph.stretch_repeat]
-    dif = np.subtract(ph.repeat_co, ph.stretch_co, out=ph.stretch_dif)
-    dist = np.sqrt(np.einsum('ij,ij->i', dif, dif, out=ph.stretch_dist))
-    
-    u_dif = dif / dist[:, None]
-    #u_dif = np.divide(dif finish this / dist[:, None]
-    new_locs = ph.stretch_co + (u_dif * ph.target_dist)
-    ph.stretch_mean[:] = 0.0
-    np.add.at(ph.stretch_mean, ph.stretch_repeat, new_locs)
-    ph.stretch_mean *= ph.stretch_counts
-    ph.current_co[:] = ph.stretch_mean
+    vecs = ph.current_co[ph.mix_eidx[:, 1]] - ph.current_co[ph.mix_eidx[:, 0]]
+    current_lengths = np.sqrt(np.einsum('ij,ij->i', vecs, vecs))
+    div = ph.target_edge_lengths / current_lengths
+    plot = vecs * div[:, None]
+    move = (vecs - plot)
 
-    ### ===== UPDATE PINNED ===== ###    
-    ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]    
-    
-    ### ===== X THINGY MID MEAN ===== ###
-    if False:    
-        e_vecs = ph.x_co[1::2] - ph.x_co[::2]
-        ph.x_mid = ph.x_co[::2] + (e_vecs * ph.x_factor)
-        mix_mid = (ph.current_co[ph.mesh_bone_idx] + ph.x_mid) * 0.5
-        ph.x_mid = mix_mid
-        ph.current_co[ph.mesh_bone_idx] = mix_mid
-    
-    else:    
-        ph.x_mid = ph.current_co[ph.mesh_bone_idx]
+    np.add.at(ph.current_co, ph.bone_and_x_eidx[:, 0], move[:ph.bone_count * 2] * ph.left_move_force)
+    np.subtract.at(ph.current_co, ph.mix_eidx[:, 1], move * ph.right_move_force)
+        
 
-    replot_orthagonal(ph)
-    
-    C.set_shape_co(ph.x_mesh, "Current", ph.x_co.ravel())
-    ph.x_mesh.data.update()
-
-    #return
-    if False: # will do this in angular
-        bone_x = ph.physics_m3[:, :, 0]
-        ph.x_co[ph.x_eidx[:, 0]] = ph.x_mid - (bone_x * (1 - ph.x_factor))
-        ph.x_co[ph.x_eidx[:, 1]] = ph.x_mid + (bone_x * ph.x_factor)
-
-    #ph.current_co[ph.mesh_bone_idx] = ph.x_mid
-    bpy.data.objects['b0'].location = ph.x_mid[0]
-    bpy.data.objects['b1'].location = ph.x_mid[1]
-
-
-
-def matrix_from_edges(ph):
-    yeco = ph.current_co[ph.eidx]
-    yvecs = yeco[:, 1] - yeco[:, 0]
-    u_y = C.u_vecs(yvecs)
-    
-    # should be u and orthagonal already: 
-    u_x = ph.x_co[1::2] - ph.x_co[::2]
-    cross = np.cross(u_x, u_y)
-
-    new_m3 = np.copy(ph.physics_m3)
-    new_m3[:,:,0] = u_x
-    new_m3[:,:,1] = u_y
-    new_m3[:,:,2] = cross
-    
-    return new_m3
-
-
-def one_angle_2(ph):
-
-    ### === updeat physics m3 to edge === ###
-    bone_x = ph.physics_m3[:, :, 0]
-    mesh_edge_co = ph.x_co[ph.x_eidx]
-    mesh_vecs = mesh_edge_co[:, 1] - mesh_edge_co[:, 0]
-    mesh_u_vecs = C.u_vecs(mesh_vecs)
-    x_quats = Q.get_edge_match_quats(bone_x, mesh_u_vecs, out=None)
-    Q.rotate_m3s(ph.physics_m3, x_quats)
-    ### ===
-    
-    rot_to_plot = np.linalg.inv(ph.target_m3)[ph.repeater] @ ph.target_m3[ph.relative]
-    plot_relative = ph.physics_m3[ph.repeater] @ rot_to_plot
-    
-    plot_x_vecs = plot_relative[:, :, 0]    
-    relative_rot_edges = C.vec_to_vec_pivot(mesh_edge_co[ph.relative], plot_x_vecs, factor=0.5)
-    # fix some shape issues...
-    relative_rot_edges.shape = (relative_rot_edges.shape[0] * 2, 3)
-
-    ph.x_stretch_mean[:] = 0.0
-    np.add.at(ph.x_stretch_mean, ph.x_eidx[ph.relative].ravel(), relative_rot_edges)
-    x_rot_locs = ph.x_stretch_mean * ph.x_angle_mean_counts        
-
-    move = x_rot_locs - ph.x_co
-    ph.x_co[:] += (move * 0.5)
-
-
-def one_angle(ph):
-
-    ### === updeat physics m3 to edge === ###
-    bone_y = ph.physics_m3[:, :, 1]    
+def vecs_to_matrix(ph):
     mesh_edge_co = ph.current_co[ph.eidx]
     mesh_vecs = mesh_edge_co[:, 1] - mesh_edge_co[:, 0]
-    mesh_u_vecs = C.u_vecs(mesh_vecs)
-    y_quats = Q.get_edge_match_quats(bone_y, mesh_u_vecs, out=None)
-    Q.rotate_m3s(ph.physics_m3, y_quats)
-    ### ===
+    mesh_u_vecs = C.u_vecs(mesh_vecs)    
+    u_x_vecs = U.replot_orthagonal_mix(ph)
+    z_vecs = np.cross(u_x_vecs, mesh_u_vecs)    
+    ph.physics_m3[:, :, 0] = u_x_vecs
+    ph.physics_m3[:, :, 1] = mesh_u_vecs
+    ph.physics_m3[:, :, 2] = z_vecs
+    return mesh_edge_co, u_x_vecs, mesh_u_vecs, z_vecs 
+    
+
+def both_angles_mix(ph):
+
+    # update matrix------
+    mesh_edge_co, ux, uy, uz = vecs_to_matrix(ph)
+    # -------------------
     
     rot_to_plot = np.linalg.inv(ph.target_m3)[ph.repeater] @ ph.target_m3[ph.relative]
     plot_relative = ph.physics_m3[ph.repeater] @ rot_to_plot
     
-    plot_y_vecs = plot_relative[:, :, 1]    
+    plot_y_vecs = plot_relative[:, :, 1]
     relative_rot_edges = C.vec_to_vec_pivot(mesh_edge_co[ph.relative], plot_y_vecs, factor=0.5)
-    # fix some shape issues...
     relative_rot_edges.shape = (relative_rot_edges.shape[0] * 2, 3)
-
-    ph.stretch_mean[:] = 0.0
-    np.add.at(ph.stretch_mean, ph.relative_eidx.ravel(), relative_rot_edges)
-    y_rot_locs = ph.stretch_mean * ph.angle_mean_counts        
-
-    move = y_rot_locs - ph.current_co
-    ph.current_co[:] += (move * 0.5)
-    ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]
-    replot_orthagonal(ph)
-
-
-def angular_solve(ph):
-    one_angle(ph)
-    one_angle_2(ph)
-    return
-    rot_to_plot = np.linalg.inv(ph.target_m3)[ph.repeater] @ ph.target_m3[ph.relative]
-    plot_relative = ph.physics_m3[ph.repeater] @ rot_to_plot
-
-    phys_x = ph.physics_m3[:, :, 0]
-    phys_y = ph.physics_m3[:, :, 1]
-    phys_z = ph.physics_m3[:, :, 2]
-    rel_x = plot_relative[:, :, 0]
-    rel_y = plot_relative[:, :, 1]
-    rel_z = plot_relative[:, :, 2]
-    print(rel_x.shape, "rel_x shape")
-    print(phys_x[ph.repeater].shape, "phys_x shape")
     
-    #Q.get_edge_match_quats(phys_x[ph.repeater], rel_x, out=ph.x_edge_match_quats, factor=0.25)
-    Q.get_edge_match_quats(phys_x[ph.relative], rel_x, out=ph.x_edge_match_quats, factor=1.0)
-    #Q.get_edge_match_quats(phys_y[ph.repeater], rel_y, out=ph.y_edge_match_quats, factor=0.25)
-    Q.get_edge_match_quats(phys_y[ph.repeater], rel_y, out=ph.y_edge_match_quats, factor=1.0)
-    Q.get_edge_match_quats(phys_z[ph.repeater], rel_z, out=ph.z_edge_match_quats, factor=0.25)
-    mix1 = Q.add_quats(ph.x_edge_match_quats, ph.y_edge_match_quats, normalize=False, out=None)
-    mix = Q.add_quats(mix1, ph.z_edge_match_quats, normalize=False, out=None)
-    phys_cop = np.copy(ph.physics_m3)
-    
-    #Q.rotate_m3s(phys_cop, mix)
-    Q.rotate_m3s(phys_cop, ph.y_edge_match_quats)
-    #ph.physics_m3 = phys_cop
-    plot_x = phys_cop[:, :, 0][ph.repeater]
-    plot_y = phys_cop[:, :, 1][ph.repeater]
-    
-    mesh_edge_co = ph.current_co[ph.eidx]
-    y_pivot = C.vec_to_vec_pivot(mesh_edge_co[ph.relative], plot_y, factor=0.5)
-    y_pivot.shape = (y_pivot.shape[0] * 2, 3)
-
-    ph.stretch_mean[:] = 0.0
-    np.add.at(ph.stretch_mean, ph.eidx[ph.repeater].ravel(), y_pivot)
-    ph.current_co[:] = ph.stretch_mean * ph.angle_mean_counts
-
-    return
-    x_edge_co = ph.x_co[ph.x_eidx]
-    x_pivot = C.vec_to_vec_pivot(x_edge_co[ph.relative], plot_x, factor=0.5)
-    x_pivot.shape = (x_pivot.shape[0] * 2, 3)
-    ph.x_stretch_mean[:] = 0.0
-    np.add.at(ph.x_stretch_mean, ph.x_eidx[ph.relative].ravel(), x_pivot)
-    x_rot_locs = ph.x_stretch_mean * ph.x_angle_mean_counts
-    ph.x_co = x_rot_locs    
-    
-    ### ===== RESET PINNED ===== ###
-    ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]
-    replot_orthagonal(ph)
-    
-    new_m3 = matrix_from_edges(ph)
-    #ph.physics_m3 = new_m3
-
-    # visualize in test rig:
-    rel = bpy.data.objects['rel']
-    A.set_ar_m3_world(rel, phys_cop, locations=None, return_quats=False)
-    
-    
-    return
-
-    #if False:
-    if True:
-        if True:
-            ph.current_co[:] = y_rot_locs
-        else:
-            move = y_rot_locs - ph.current_co
-            ph.current_co += (move * 0.5)
+    # ------- new solver
+    move = (relative_rot_edges - ph.current_co[ph.relative_eidx.ravel()])
+    np.add.at(ph.current_co, ph.relative_eidx.ravel(), move * ph.rel_rot_multiplier)
+    # ------- new solver
         
-
-
+    # now x
+    plot_x_vecs = plot_relative[:, :, 0]    
+    x_edge_co = ph.current_co[ph.mx_eidx][ph.relative]
     
-    #edge_set = True
-    edge_set = False
-    if edge_set:    
-        mesh_bone_co = ph.current_co[ph.mesh_bone_idx] # this is for plotting the locations of bones relative to coordinates in the physics mesh
-        mesh_edge_co = ph.current_co[ph.eidx]
-        mesh_vecs = mesh_edge_co[:, 1] - mesh_edge_co[:, 0]
-        mesh_u_vecs = C.u_vecs(mesh_vecs)
+    relative_rot_edges = C.vec_to_vec_pivot(x_edge_co, plot_x_vecs, factor=0.5)
+    relative_rot_edges.shape = (relative_rot_edges.shape[0] * 2, 3)
+    x_edge_co.shape = (x_edge_co.shape[0] * 2, 3)
         
-        bone_y = physics_m3[:, :, 1]
-        Q.get_edge_match_quats(bone_y, mesh_u_vecs, out=ph.edge_match_quats)
-        physics_m3 = Q.rotate_m3s(physics_m3, ph.edge_match_quats)        
+    # ------- new solver
+    x_move = relative_rot_edges - x_edge_co
+    np.add.at(ph.current_co, ph.mx_eidx_relative.ravel(), x_move * ph.x_rot_multiplier)
+    # ------- new solver
     
-        A.set_ar_m3_world(ph.physics_rig, physics_m3, locations=mesh_bone_co, return_quats=False)
+
+def edit_mode_update(ph):
+    """Detect selected and update
+    current_co and vel_start to
+    selected location."""
+    try:
+        ph.mix_obm.verts[0]
+    except (ReferenceError, IndexError):
+        ph.mix_obm = U.get_bmesh(ph.mix_mesh, refresh=True)
     
+    for i, v, in enumerate(ph.mix_obm.verts):
+        ph.pinned[i] = v.select
+        if ph.pinned[i]:
+            ph.vel_start[i] = v.co
+            ph.current_co[i] = v.co
+    
+
+def update_pinned(ph):
+    ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]
+    influence_targets(ph)
+
+
+def collision(ph):
+    ### ----- COLLISION ----- ###
+    yz = ph.current_co[:, 2][:ph.yvc]
+    ph.hit = yz <= 0.0
+    
+    ph.vel_start[:ph.yvc][:, 2][ph.hit] = 0.0
+    ph.current_co[:ph.yvc][ph.hit] = ph.vel_start[:ph.yvc][ph.hit]
+    ph.velocity[:ph.yvc][ph.hit] = 0.0
+    ### ----- --------- ----- ###
+
+
+def collision_refresh(ph):
+    ph.current_co[:ph.yvc][ph.hit] = ph.vel_start[:ph.yvc][ph.hit]
+
+
+def influence_check(ph):
+    """Check for needed updates outside of
+    iterations.
+    !!! can run this on prop callbacks when
+    creating heads, tail, or adjusting
+    values on heads or tails !!!"""
+    
+    bpy.context.view_layer.update()
+    
+    for b in ph.physics_rig.pose.bones:
+        if b.Ce_props.target_object:
+            if not (b.Ce_props.target_object.name in bpy.context.scene.objects):
+                b.Ce_props.target_object = None
+        if b.Ce_props.tail_target_object:
+            if not (b.Ce_props.tail_target_object.name in bpy.context.scene.objects):
+                b.Ce_props.tail_target_object = None
+        
+    targets = [b.Ce_props.target_object for b in ph.physics_rig.pose.bones if b.Ce_props.target_object]
+    tail_targets = [b.Ce_props.tail_target_object for b in ph.physics_rig.pose.bones if b.Ce_props.tail_target_object]
+    
+    both = targets + tail_targets
+    ph.head_tail_targets = both
+    ph.inf_targets = True
+    if len(both) == 0:
+        ph.inf_targets = None
+        return
+
+    ph.inf_spring_influence = np.array([b.Ce_props.influence_spring for b in both], dtype=np.float32)[:, None]
+    ph.inf_linear_influence = np.array([b.Ce_props.influence_directional for b in both], dtype=np.float32)[:, None]
+    
+    ph.any_spring = np.any(ph.inf_spring_influence != 0.0)
+    ph.any_linear = np.any(ph.inf_linear_influence != 0.0)
+    if (not ph.any_spring) & (not ph.any_linear):
+        ph.inf_targets = None
+        return
+
+    ph.target_matricies = np.array([b.matrix_world for b in both], dtype=np.float32)
+    ph.head_tail_eidx = np.array([[b.Ce_props.influence_head_idx, b.Ce_props.influence_tail_idx] for b in both])
+    
+    tails = [t.Ce_props.influence_is_tail for t in both]
+    heads = ph.head_tail_eidx[:, 0]
+    heads[tails] = ph.head_tail_eidx[tails][:, 1]
+    ph.head_tail_idx = heads
+
+
+def influence_targets(ph):
+
+    if not ph.inf_targets:
+        return
+    
+    both = ph.head_tail_targets
+        
+    if len(both) == 0:
+        return
+    
+    spring_influence = ph.inf_spring_influence
+    linear_influence = ph.inf_linear_influence
+    
+    any_spring = ph.any_spring
+    any_linear = ph.any_linear
+
+    BM = ph.target_matricies
+
+    head_tail = ph.head_tail_eidx
+    world_co = U.apply_transforms(ph.mix_mesh, ph.current_co)
+    head_co = world_co[head_tail[:, 0]]
+    tail_co = world_co[head_tail[:, 1]]
+
+    heads = ph.head_tail_idx
+    
+    if any_linear:
+        y = BM[:, :3, 1]
+        lin_move = y * linear_influence    
+        np.add.at(ph.current_co, heads, lin_move)
+
+    if any_spring:        
+        both_co = BM[:, :3, 3]
+        move = both_co - world_co[ph.head_tail_idx]
+        move *= spring_influence        
+        np.add.at(ph.current_co, ph.head_tail_idx, move)        
 
 
 def live_update(scene=None):
-    T = time.time()
-    
-    # update the bmesh ----------
+
     ph = DATA['ph']
-    if ph.physics_mesh.data.is_editmode:    
-        try:
-            ph.obm.verts[0]
-        except (ReferenceError, IndexError):
-            ph.obm = U.get_bmesh(ph.physics_mesh, refresh=True)
-        
-        # update grabbed points ----------
-        for i, v, in enumerate(ph.obm.verts):
-            ph.pinned[i] = v.select
-            if ph.pinned[i]:
-                ph.current_co[i] = v.co                 
-                ph.vel_start[i] = v.co
-    else:
+    Ce = ph.target_rig.Ce_props
+    # update mix bmesh -----------
+    if ph.mix_mesh.data.is_editmode:
+        edit_mode_update(ph)
+    else:    
         ph.pinned[:] = False
-    
-    ph.pinned[ph.collided] = True
-    
-    ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]
-    ph.vel_start[:] = ph.current_co
-    
-    ### -----LINEAR----- ###
-    for i in range(4):
-        linear_solve(ph)
-        collision_test(ph)
-        
-    ### -----ANGULAR----- ###
+
     ph.target_m3 = A.get_ar_matrix_world(ph.target_rig, m3=True)
-    #ph.physics_m3 = A.get_ar_matrix_world(ph.physics_rig, m3=True)
     angular_force = ph.target_rig.Ce_props.angular_force
-    int_part, decimal = U.split_float(angular_force)
-    
-    #for i in range(int_part):
-    for i in range(int_part):
-        angular_solve(ph)
-        collision_test(ph)
-    
-    #return
-    ### -----GRAVITY----- ###
-    ob_gravity = ph.physics_mesh.Ce_props.gravity
-    gravity = ob_gravity
-    ob_velocity = ph.physics_mesh.Ce_props.velocity
-    ph.velocity[:,2] += gravity
-    
-    ### -----VELOCITY----- ###
-    vel = ph.current_co - ph.vel_start
-    ph.velocity += vel
-    ph.velocity[ph.pinned] = 0.0
-    ph.current_co += ph.velocity
-    ph.velocity *= ob_velocity
+    influence_check(ph) # see if there are any targets
+        
+    for i in range(Ce.sub_frames):
 
-    ### ----- COLLISION ----- ###
-    collision_test(ph)
+        ### -----GRAVITY----- ###
+        gravity_prop = ph.target_rig.Ce_props.gravity * 0.01
+        ph.velocity[:,2] += gravity_prop
+        
+        ### ----- MIX VELOCITY ----- ###
+        velocity_prop = ph.target_rig.Ce_props.velocity
+        vel_mix = ph.current_co - ph.vel_start
+        ph.velocity += vel_mix
+        ph.velocity[ph.pinned] = 0.0
+        ph.velocity *= velocity_prop
+        
+        ph.current_co += ph.velocity
+        update_pinned(ph)
 
-    ph.current_co[ph.pinned] = ph.vel_start[ph.pinned]
-    
-    ### -----WRITE TO MESH----- ###
-    if ph.physics_mesh.data.is_editmode:
-        for i, v in enumerate(ph.obm.verts):
+        ph.vel_start[:] = ph.current_co
+        collision(ph)
+            
+        ### -----LINEAR----- ###
+        for i in range(Ce.linear_iters):
+            linear_solve(ph)
+            update_pinned(ph)
+
+        ### -----ANGULAR----- ###
+        int_part, decimal = U.split_float(angular_force)
+            
+        collision_refresh(ph)
+        for i in range(Ce.angular_iters):
+            collision_refresh(ph)
+            both_angles_mix(ph)
+            update_pinned(ph)
+            
+            for i in range(Ce.linear_post_iters):
+                linear_solve(ph)
+                update_pinned(ph)
+
+        collision(ph)
+        
+    ### ----- UPDATE MESH ----- ###
+    if ph.mix_mesh.data.is_editmode:
+        for i, v in enumerate(ph.mix_obm.verts):
             if not v.select:    
                 v.co = ph.current_co[i]
                     
-        bmesh.update_edit_mesh(ph.physics_mesh.data)
+        bmesh.update_edit_mesh(ph.mix_mesh.data)
 
-    else:
-        C.set_shape_co(ph.physics_mesh, "Current", ph.current_co)
-        ph.physics_mesh.data.update()
-    
+    else: 
+        C.set_shape_co(ph.mix_mesh, "Current", ph.current_co)
+        ph.mix_mesh.data.update()
+        
     ### ----- UPDATE RIG ----- ###
     mesh_bone_co = ph.current_co[ph.mesh_bone_idx]
-    A.set_ar_m3_world(ph.physics_rig, ph.physics_m3, locations=mesh_bone_co, return_quats=False)
-    
-    
+    A.set_ar_m3_world(ph.physics_rig, ph.physics_m3, locations=mesh_bone_co, return_quats=False)   
+            
     if ph.mesh_only:
         ph.vel_start[:] = ph.current_co
         return 0.0    
     
-    print(time.time() - T)
+    #print(time.time() - T)
     delay = 0.0
     return delay
 
 
+### ================= ###
+#                       #
+#   ===== SETUP =====   #
+#                       #
+### ================= ###
 def install_handler(live=False, animated=False):
     """Adds a live or animated updater"""
 
@@ -462,6 +363,117 @@ def get_regroup_index(repeater):
             rel_rep_regroup += [current_group]
     return rel_rep_regroup
 
+ 
+def distribute_mass(ph):
+    # come back here
+    bone_count = len(ph.target_rig.pose.bones)
+
+    # quick edge ------- 
+    ph.mix_eidx = np.array(ph.mix_mesh.data.edge_keys, dtype=np.int32)
+    vecs = ph.target_co_mix[ph.mix_eidx[:, 1]] - ph.target_co_mix[ph.mix_eidx[:, 0]]
+    ph.target_edge_lengths = np.sqrt(np.einsum('ij,ij->i', vecs, vecs))
+    # quick edge -------
+
+    bone_edges = ph.mix_eidx[:bone_count]
+    x_edgex = ph.mix_eidx[bone_count: bone_count * 2]
+    lat_edges = ph.mix_eidx[bone_count * 2:]
+
+    ph.bone_edges = bone_edges
+    ph.bone_count = bone_count
+
+    mass_balance = np.zeros(ph.mix_eidx.shape[0])[:, None]
+    mass_balance[bone_count:] = 0.25
+    
+    ph.bone_and_x_eidx = ph.mix_eidx[:bone_count * 2]
+
+    head_mass = np.array([b.Ce_props.head_mass for b in ph.target_rig.pose.bones], dtype=np.float32)
+    tail_mass = np.array([b.Ce_props.tail_mass for b in ph.target_rig.pose.bones], dtype=np.float32)
+    bone_mass = (head_mass + tail_mass) * 0.5
+    
+    testing = False
+    if testing:
+        head_mass[:] = 1.0
+        tail_mass[:] = 1.0
+    
+        
+    node_mass = np.zeros(ph.current_co.shape[0])
+    np.add.at(node_mass, ph.mesh_bone_idx, head_mass)
+    np.add.at(node_mass, ph.mesh_bone_tail_idx, tail_mass)
+    node_mass[ph.mx_eidx.ravel()] = np.repeat(bone_mass, 2)
+
+    mb_div = 1 / np.sum(node_mass[bone_edges], axis=1)[:, None]
+    l_r_mass = node_mass[bone_edges] * mb_div
+
+    l_uni, l_inv, l_counts = np.unique(bone_edges[:, 0], return_inverse=True, return_counts=True)
+    r_uni, r_inv, r_counts = np.unique(bone_edges[:, 1], return_inverse=True, return_counts=True)
+    l_mult = 1 / l_counts[l_inv]
+    r_mult = 1 / r_counts[r_inv]
+
+    lr_uni, lr_inv, lr_counts = np.unique(bone_edges.ravel(), return_inverse=True, return_counts=True)
+    lr_mult = 1 / lr_counts[lr_inv]
+
+    swap = np.roll(l_r_mass, 1, 1)
+    l_r_mass = swap.ravel() * lr_mult
+    l_r_mass.shape = (l_r_mass.shape[0] // 2, 2)
+
+    left_move_force = np.copy(mass_balance.ravel())
+    left_move_force[:bone_count] = l_r_mass[:, 0]
+    
+    right_move_force = np.copy(mass_balance.ravel())
+    right_move_force[:bone_count] = l_r_mass[:, 1]
+
+    ph.left_move_force = left_move_force[:bone_count * 2][:, None]
+    ph.right_move_force = right_move_force[:, None]
+    
+    rel_eidx = ph.eidx[ph.relative]
+    rep_eidx = ph.eidx[ph.repeater]
+    
+    shared = []
+    rel_rot_idxer = []
+    offset = 0
+    for i in range(rel_eidx.shape[0]):
+        
+        if rep_eidx[i][0] in rel_eidx[i]:
+            shared += [rep_eidx[i][0]]
+            rel_rot_idxer += [0 + offset]
+        else:
+            shared += [rep_eidx[i][1]]            
+            rel_rot_idxer += [1 + offset]
+
+        offset += 2
+
+    # mass all set to one
+    bones_1 = np.ones_like(bone_mass)
+    
+    relative_bone_1 = bones_1[ph.relative]
+    acc_bone_1 = np.zeros(ph.y_vidx.shape[0], dtype=np.float32)
+    np.add.at(acc_bone_1, ph.eidx[ph.relative].ravel(), np.repeat(relative_bone_1, 2))
+    ph.rel_rot_multiplier = (1 / acc_bone_1)[ph.eidx][ph.relative].ravel()[:, None]
+
+    # x attempt
+    offset_x = ph.mx_eidx - ph.mx_eidx[0]
+    acc_bone_x = np.zeros(ph.x_vidx.shape[0], dtype=np.float32)
+    relative_bone_x = bones_1[ph.relative]
+    np.add.at(acc_bone_x, offset_x[ph.relative].ravel(), np.repeat(relative_bone_1, 2))
+    ph.x_rot_multiplier = (1 / acc_bone_x)[offset_x][ph.relative].ravel()[:, None]
+    
+    # compare_mass
+    # left side of relative should compare to right side of repeat
+    relative_mass = bone_mass[ph.relative]
+    repeat_mass = bone_mass[ph.repeater]
+    compare_sum = relative_mass + repeat_mass
+    print(compare_sum)
+    relative_balanced = relative_mass / compare_sum
+    repeat_balanced = (repeat_mass / compare_sum) * 2
+
+    ph.repeat_eidx = ph.eidx[ph.repeater]
+    ph.relative_eidx = ph.eidx[ph.relative]    
+
+    ph.rel_rot_multiplier = ph.rel_rot_multiplier * np.repeat(repeat_balanced, 2)[:, None]
+    ph.x_rot_multiplier = ph.x_rot_multiplier * np.repeat(repeat_balanced, 2)[:, None]
+    
+    # steve
+
 
 class physics():
     def __init__(self, physics_rig, target_rig, mesh_only=False):
@@ -470,103 +482,112 @@ class physics():
         self.mesh_only = mesh_only
         physics_mesh = mesh_only
         self.physics_mesh = physics_mesh
-        if not mesh_only:
-            physics_mesh, edges, co, index, relative, repeater = A.make_ar_mesh(target_rig)
-            self.rel_rep_regroup = get_regroup_index(repeater)
-            
-            physics_mesh.show_in_front = True
-            self.eidx = np.array(edges, dtype=np.int32)
-            self.physics_mesh = physics_mesh
+        
+        self.target_rig = target_rig
+        self.physics_rig = physics_rig
+        self.target_m3 = A.get_ar_matrix_world(self.target_rig, m3=True)
+        self.physics_m3 = A.get_ar_matrix_world(self.physics_rig, m3=True)
+        
+        # mass
+        self.head_mass = np.array([b.Ce_props.head_mass for b in self.target_rig.pose.bones], dtype=np.float32)
+        self.tail_mass = np.array([b.Ce_props.tail_mass for b in self.target_rig.pose.bones], dtype=np.float32)
+
+        # friction
+        self.head_friction = np.array([b.Ce_props.head_friction for b in self.target_rig.pose.bones], dtype=np.float32)
+        self.tail_friction = np.array([b.Ce_props.tail_friction for b in self.target_rig.pose.bones], dtype=np.float32)
+        
+        if not mesh_only:            
+            relative, repeater = A.get_relative_bones(target_rig)
             self.relative = np.array(relative, dtype=np.int32)
-            self.repeater = np.array(repeater, dtype=np.int32)
-            self.mesh_bone_idx = self.eidx[:, 0]
+            self.repeater = np.array(repeater, dtype=np.int32)            
             self.physics_rig = physics_rig
             self.target_rig = target_rig
             bc = len(physics_rig.pose.bones)
             self.bc = bc
         
-        vc = len(physics_mesh.data.vertices)
-        self.vc = vc
-        self.vidx = np.arange(vc)
-        U.manage_shapes(physics_mesh, shapes=["Basis", "Target", "Current"])
-        physics_mesh.data.shape_keys.key_blocks["Current"].value = 1.0
-        physics_mesh.active_shape_key_index = 2
+        # mix    
+        mix_mesh, edges, mx_eidx, x_start_eidx, mix_vidx, x_vidx, y_vidx = A.make_mix_mesh(target_rig, self)
+        self.edges = edges
+        self.mix_mesh = mix_mesh
+        self.mx_eidx = mx_eidx
+        self.mx_eidx_relative = self.mx_eidx[self.relative]
+        self.x_start_eidx = x_start_eidx
+        self.x_vidx = x_vidx
+        self.y_vidx = y_vidx
+        self.eidx = np.array(edges, dtype=np.int32)
+        self.mix_vidx = mix_vidx
+        self.yvc = len(mix_vidx)
         
-        # indexing
-        self.obm = U.get_bmesh(physics_mesh)
-        self.pinned = np.array([v.select for v in self.obm.verts], dtype=bool)
-        self.collided = np.zeros(vc, dtype=bool)
-        self.stretch_idx, self.stretch_repeat, self.stretch_counts = get_stretch_springs(self)
+        self.v_count = len(mix_mesh.data.vertices)
+        self.x_bool = np.zeros(self.v_count, dtype=bool)
+        self.x_bool[self.x_vidx] = True
+        self.y_bool = np.zeros(self.v_count, dtype=bool)
+        self.y_bool[self.y_vidx] = True
+        self.yvc = self.y_vidx.shape[0]        
+        self.mesh_bone_idx = self.eidx[:, 0]
+        self.mesh_bone_tail_idx = self.eidx[:, 1]
         
-        # targeting
-        self.stretch_dist = np.empty(self.stretch_repeat.shape[0], dtype=np.float32)
-        self.stretch_dif = np.empty((self.stretch_repeat.shape[0], 3), dtype=np.float32)
-        self.stretch_mean = np.empty((vc, 3), dtype=np.float32)
-        self.x_stretch_mean = np.empty((bc * 2, 3), dtype=np.float32)
+        vc_mix = len(mix_mesh.data.vertices)
+        self.vc_mix = vc_mix
+        self.vidx_mix = np.arange(vc_mix)
+        U.manage_shapes(mix_mesh, shapes=["Basis", "Target", "Current"])
+        mix_mesh.data.shape_keys.key_blocks["Current"].value = 1.0
+        mix_mesh.active_shape_key_index = 2
         
-        # coordinates
-        self.target_co = np.empty((vc, 3), dtype=np.float32)
-        C.get_shape_co_mode(ob=physics_mesh, co=self.target_co, key='Target')
-        self.current_co = np.empty((vc, 3), dtype=np.float32)
-        C.get_shape_co_mode(ob=physics_mesh, co=self.current_co, key='Current')
-        self.crawl = np.copy(self.current_co)
-        self.crawl_output = np.empty((vc, 3), dtype=np.float32)
+        # mix coordinates:
+        self.target_co_mix = np.empty((vc_mix, 3), dtype=np.float32)
+        C.get_shape_co_mode(ob=mix_mesh, co=self.target_co_mix, key='Target')
+        self.current_co = np.empty((vc_mix, 3), dtype=np.float32)
+        C.get_shape_co_mode(ob=mix_mesh, co=self.current_co, key='Current')
+        self.pre_collided = np.copy(self.current_co)
         
-        # linear
-        self.stretch_co = self.current_co[self.stretch_idx]
-        self.repeat_co = self.current_co[self.stretch_repeat]
-        dif = np.subtract(self.target_co[self.stretch_idx], self.target_co[self.stretch_repeat], out=self.stretch_dif)
-        self.target_dist = np.sqrt(np.einsum('ij,ij->i', dif, dif, out=self.stretch_dist))[:, None]
+        self.mix_obm = U.get_bmesh(mix_mesh)
+        self.pinned = np.array([v.select for v in self.mix_obm.verts], dtype=bool)
+        self.collided = np.zeros(vc_mix, dtype=bool)
+        self.stretch_idx_mix, self.stretch_repeat_mix, self.stretch_counts_mix = get_stretch_springs_mix(self)
         
-        # velocity
-        self.velocity = np.zeros((vc, 3), dtype=np.float32)
-        self.vel_start = np.empty((vc, 3), dtype=np.float32)
+        # mix
+        self.stretch_dist_mix = np.empty(self.stretch_repeat_mix.shape[0], dtype=np.float32)
+        self.u_dif_mix = np.empty((self.stretch_repeat_mix.shape[0], 3), dtype=np.float32)
+        self.stretch_dif_mix = np.empty((self.stretch_repeat_mix.shape[0], 3), dtype=np.float32)
+        self.stretch_mean_mix = np.empty((self.vc_mix, 3), dtype=np.float32)
+        self.stretch_mean_y = np.empty((self.yvc, 3), dtype=np.float32)
+
+        self.x_stretch_mean_mix = np.empty((bc * 2, 3), dtype=np.float32)
+
+        # linear mix
+        self.stretch_co_mix = self.current_co[self.stretch_idx_mix]
+        self.repeat_co_mix = self.current_co[self.stretch_repeat_mix]
+        dif_mix = np.subtract(self.target_co_mix[self.stretch_idx_mix], self.target_co_mix[self.stretch_repeat_mix], out=self.stretch_dif_mix)
+        self.target_dist_mix = np.sqrt(np.einsum('ij,ij->i', dif_mix, dif_mix, out=self.stretch_dist_mix))[:, None]
+
+        self.velocity = np.zeros((vc_mix, 3), dtype=np.float32)
+        self.vel_start = np.empty((vc_mix, 3), dtype=np.float32)
         self.vel_start[:] = self.current_co
 
         if mesh_only:
             return
         
-        # angular
-        self.target_m3 = A.get_ar_matrix_world(self.target_rig, m3=True)
-        self.physics_m3 = A.get_ar_matrix_world(self.physics_rig, m3=True)
+        # angular ------------
         self.start_physics_m3 = A.get_ar_matrix_world(self.physics_rig, m3=True)
         self.relative_m3 = self.target_m3[self.relative]
         self.repeater_m3 = self.target_m3[self.repeater]
-        self.x_mean = np.zeros((self.target_m3.shape[0], 3), dtype=np.float32)
         
         self.relative_eidx = self.eidx[self.relative]
-        self.angle_mean_counts = 1 / np.array([np.count_nonzero(self.relative_eidx.ravel() == v) for v in self.vidx], dtype=np.float32)[:, None]
-        x_1 = 1 / np.array([np.count_nonzero(self.repeater == v) for v in np.arange(len(self.physics_rig.pose.bones))], dtype=np.float32)
-        self.x_angle_mean_counts = np.repeat(x_1, 2)[:, None]
+        self.angle_mean_counts = 1 / np.array([np.count_nonzero(self.relative_eidx.ravel() == v) for v in self.y_vidx], dtype=np.float32)[:, None]
         
-        quat_shape = self.eidx[self.repeater].shape[0]
+        self.start_x_eidx_relative = self.x_start_eidx[self.relative]
+        self.start_x_eidx_repeater = self.x_start_eidx[self.repeater]
         
-        self.x_edge_match_quats = np.empty((quat_shape, 4), dtype=np.float32)
-        self.y_edge_match_quats = np.empty((quat_shape, 4), dtype=np.float32)
-        self.z_edge_match_quats = np.empty((quat_shape, 4), dtype=np.float32)
-
+        uni, counts = np.unique(self.start_x_eidx_repeater, return_counts=True)
+        self.x_angle_mean_counts = (1 / counts)[:, None]
         
+        self.hit = np.zeros(self.current_co.shape[0], dtype=bool)
         
+        # setup mass:
+        distribute_mass(self)
+        # ----------- come back here
         
-        ### ===== XZ CROSS THINGY ===== ###
-        # in the future we can raycast on the x and z axis
-        #   to get the length of these edges.
-        #   Maybe for now we just use u_vecs.
-        # The xz cross thingy should be placed along
-        #   the center of mass on the y axis as well.
-        #   It should exert a force on the y axis edge
-        #       moving both ends of the y axis edge 
-        #       based on the difference between the
-        #       y axis center of mass and the xz center of mass.
-        # For now let's just put stuff at 0.5
-        
-        self.x_factor = 0.5 # will eventually need to be an array
-        self.x_mesh, self.x_eidx, self.x_co = A.build_xz_cross_thingy(self, factor=0.5)
-        U.manage_shapes(self.x_mesh, shapes=["Basis", "Target", "Current"])
-        self.x_mesh.data.shape_keys.key_blocks["Current"].value = 1.0
-        self.x_mesh.active_shape_key_index = 2
-
-
         ### ===== TESTING ===== ###
         self.start_tm3 = A.get_ar_matrix_world(self.target_rig, m3=True)[self.relative]
 
@@ -596,3 +617,5 @@ if False:
 
 
     install_handler(live=False, animated=True)
+
+
