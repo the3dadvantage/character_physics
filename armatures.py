@@ -5,22 +5,12 @@ import sys
 import os
 import importlib
 
-psep = os.path.sep
-path = '/home/rich/Desktop/cloth/character_engine'
-sys.path.append(path)
-
 try:
-    U = bpy.data.texts['utils.py'].as_module()
-    Q = bpy.data.texts['quaternions.py'].as_module()
-    C = bpy.data.texts['coordinates.py'].as_module()
+    from character_physics import utils as U
+    importlib.reload(U)
     
 except:
-    import utils as U
-    import quaternions as Q
-    import coordinates as C
-    importlib.reload(U)
-    importlib.reload(Q)
-    importlib.reload(C)
+    U = bpy.data.texts['utils.py'].as_module()
 
 
 #### quaternions ####
@@ -89,22 +79,6 @@ def set_ar_m3_world(ar, m3, locations=None, return_quats=False):
     bpy.context.view_layer.update()
     if return_quats:    
         return quats
-    
-
-#### quaternions ####
-def set_ar_quats_world(ar, quats=None, locations=None):
-    """Sets the world rotation correctly
-    in spite of parent bones. (and constraints??)"""
-    for i in range(len(ar.pose.bones)):
-        bpy.context.view_layer.update()
-        arm = ar.pose.bones[i].matrix
-        nparm = np.array(arm)
-        if quats is not None:
-            qte = Q.quat_to_euler(quats[i], factor=1)        
-            nparm[:3, :3] = qte
-        if locations is not None:
-            nparm[:3, 3] = locations[i]
-        ar.pose.bones[i].matrix = MAT(nparm)
 
 
 #### armature ####
@@ -315,6 +289,9 @@ def make_ar_mesh(ar):
 def make_mix_mesh(ar, ph):
 
     #relative, repeater = get_relative_bones(ar)
+    for e, b in enumerate(ar.pose.bones):
+        b['index'] = e
+
     head = get_bone_head(ar)
     tail = get_bone_tail(ar)
         
@@ -370,7 +347,7 @@ def make_mix_mesh(ar, ph):
         edges += [edge]
     
     ob = None
-    name = ar.name + "_CE_physics_mesh"
+    name = ar.name + "_Ce_physics_mesh"
     if name in bpy.data.objects:
         ob = bpy.data.objects[name]
         if ob.data.is_editmode:
@@ -412,7 +389,6 @@ def make_mix_mesh(ar, ph):
         lateral_edges += [l1, l2, l3, l4]
     
     with_lats = edges_with_x + lateral_edges
-    name = ph.target_rig.name + "_physics_mesh"
     mix_mesh = U.link_mesh(co_with_x, edges=with_lats, faces=[], name=name)# name=ph.physics_rig.name + "_mix_mesh")
     mix_mesh.matrix_world = ph.physics_rig.matrix_world
 
@@ -435,17 +411,6 @@ def build_xz_cross_thingy(ph, factor=0.5):
     return x_mesh, eidx, x_edges
 
 
-if False:
-    head = get_bone_head(ar)
-    tail = get_bone_tail(ar)
-    location = get_bone_location(ar)
-
-if False:
-    location += 0.1
-    set_bone_location(ar, location)
-    update_bones(ar)
-
-
 class Rigs():
     def __init__(self):
         self.name = "this is doable"
@@ -459,10 +424,3 @@ class Rigs():
         get_ar_quats_world(self.target_ar, self.t_quats)
         ee.rotation_quaternion = self.t_quats[0]
         
-
-if False:
-    print()
-    R = Rigs()
-    print(R.name)
-    print("=====================")
-    R.get_target_data()
