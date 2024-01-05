@@ -2,58 +2,52 @@ import bpy
 import os
 import sys
 import numpy as np
-psep = os.path.sep
-path = '/home/rich/Desktop/cloth/character_engine'
-sys.path.append(path)
+import importlib
+from bpy.app.handlers import persistent
 
 try:
-    U = bpy.data.texts['utils.py'].as_module()
-    Q = bpy.data.texts['quaternions.py'].as_module()
-    C = bpy.data.texts['coordinates.py'].as_module()
-    A = bpy.data.texts['armatures.py'].as_module()
-    E = bpy.data.texts['character_engine.py'].as_module()
-    
-except:
-    import utils as U
-    import quaternions as Q
-    import coordinates as C
-    import armatures as A
-    import character_engine as E
+    from character_physics import utils as U
+    from character_physics import armatures as A
+    from character_physics import character_engine as E
     importlib.reload(U)
-    importlib.reload(Q)
-    importlib.reload(C)
     importlib.reload(A)
     importlib.reload(E)
-
-
+    
+except:
+    U = bpy.data.texts['utils.py'].as_module()
+    A = bpy.data.texts['armatures.py'].as_module()
+    E = bpy.data.texts['character_engine.py'].as_module()
 
 # task list:
-print("make a modal operator that is a steering rig with springs\
-that will return the empties to their start location with parent\
-when you stop pressing the modal operator keys. WASD or whateves")
+if False:    
+    print("make a modal operator that is a steering rig with springs\
+    that will return the empties to their start location with parent\
+    when you stop pressing the modal operator keys. WASD or whateves")
 
-print("When doing physics setup the physics mesh needs to be\
-generated in a rest state then moved to match the physics rig\
-matrix")
+    print("When doing physics setup the physics mesh needs to be\
+    generated in a rest state then moved to match the physics rig\
+    matrix")
 
-print("influence check needs to be moved to a prop callback when\
-setting influence or creating or setting a new target")
+    print("influence check needs to be moved to a prop callback when\
+    setting influence or creating or setting a new target")
 
-print("recording could probably be done in a matrix file. Need\
-to make this for brian anyway.")
+    print("recording could probably be done in a matrix file. Need\
+    to make this for brian anyway.")
 
-print("could make a property for target rig. If this can be animated (might require python)\
-multiple target rigs could be switched for different actions then applied to recording\
-Might even be able to mix the target rigs or blend them.")
+    print("could make a property for target rig. If this can be animated (might require python)\
+    multiple target rigs could be switched for different actions then applied to recording\
+    Might even be able to mix the target rigs or blend them.")
 
-print()
-print()
-print("to monetize:")
-print("multiple rigs")
-print("collistion objects")
-print("No X collision")
-print("publish addon")
-print("record animation")
+    print("could make object friction based on vertex groups so\
+    there can be slick spots")
+
+    print("auto ik setup would place empties at terminal tails with\
+    chain length going back to where there is a split\
+    these empties could also represent node sizes\
+    these empties could also be set as pole targets.")
+
+    print("make the target rig an object property of the physics rig\
+    and change the setup so you only need to select the physics rig")
 
 
 #=======================#
@@ -72,14 +66,17 @@ def cb_handler_update(self, context):
 
 
 def cb_update_influence(self, context):
-    ph = E.DATA['ph']
+    ob = bpy.context.object
+    key = ob.Ce_props.data_key
+    if ob.type == "EMPTY":    
+        key = bpy.context.object.Ce_props.target_object.Ce_props.data_key
+    ph = E.DATA[key]
     E.influence_check(ph)
 
 
 def cb_update_head_mass(self, context):
     mix_mesh, target_rig, physics_rig, ob = get_relatives(bpy.context.object)
     
-    print("is this a bone?")
     head_mass = self.head_mass
     tail_mass = self.tail_mass
 
@@ -103,15 +100,19 @@ def cb_update_head_mass(self, context):
             for i in range(len(ob.pose.bones)):
                 target_rig.pose.bones[i].Ce_props["head_mass"] = ob.pose.bones[i].Ce_props["head_mass"]
 
-    if 'ph' in E.DATA:
-        ph = E.DATA['ph']
-        E.distribute_mass(ph)
+    key = physics_rig.Ce_props.data_key
+    if key not in E.DATA:
+        return
+    if physics_rig != E.DATA[key].physics_rig:
+        return
+    
+    ph = E.DATA[key]
+    E.distribute_mass(ph)
 
 
 def cb_update_tail_mass(self, context):
     mix_mesh, target_rig, physics_rig, ob = get_relatives(bpy.context.object)
     
-    print("is this a bone?")
     head_mass = self.head_mass
     tail_mass = self.tail_mass
 
@@ -135,9 +136,11 @@ def cb_update_tail_mass(self, context):
             for i in range(len(ob.pose.bones)):
                 target_rig.pose.bones[i].Ce_props["tail_mass"] = ob.pose.bones[i].Ce_props["tail_mass"]
     
-    if 'ph' in E.DATA:
-        ph = E.DATA['ph']
-        E.distribute_mass(ph)
+    key = physics_rig.Ce_props.data_key
+    if key not in E.DATA:
+        return
+    if physics_rig != E.DATA[key].physics_rig:
+        return
 
 
 def get_relatives(ob):
@@ -177,17 +180,72 @@ def reset_mass(ob):
             b.Ce_props.tail_mass = 1.0
 
 
-def cb_update_friction(self, context):
-    ph = E.DATA['ph']
-    #ph.head_friction = np.array([b.Ce_props.head_friction for b in ph.target_rig.pose.bones], dtype=np.float32)
-    #ph.tail_friction = np.array([b.Ce_props.tail_friction for b in ph.target_rig.pose.bones], dtype=np.float32)
+def cb_bone_friction(self, context):
+    physics_rig = bpy.context.object
+    key = physics_rig.Ce_props.data_key
+    if key not in E.DATA:
+        return
     
+    ph = E.DATA[key]
+    if physics_rig != ph.physics_rig:
+        return
+    E.update_node_friction(ph)
+
+
+def cb_update_collider(self, context):
+    
+    ob_list = []
+    for ob in bpy.data.objects:
+        if ob.name in bpy.context.scene.objects:
+            if ob.type == "MESH":
+                if ob.Ce_props.collider:
+                    ob_list += [ob.id_data]
+                    U.get_vertex_weights(ob, "Ce_friction")
+            
+    bpy.context.scene['Ce_collider_objects'] = ob_list
+
+    dead = []
+    for k, ph in E.DATA.items():
+        try:            
+            ph.physics_rig.name
+        except ReferenceError:
+            candidates = [ob for ob in bpy.data.objects if ob.Ce_props.data_key == ph.data_key]
+            if len(candidates) == 2:
+                ph.physics_rig = [ob for ob in candidates if ob.type == "ARMATURE"][0]
+                ph.mix_mesh = [ob for ob in candidates if ob.type == "MESH"][0]
+                ph.pose_target = ph.physics_rig.Ce_props.pose_target
+                E.refresh_collision_objects(ph)
+            else:
+                dead += [k]
+
+    for dk in dead:
+        del E.DATA[dk]
+
+    
+
+def cb_update_node_size(self, context):
+    for k, ph in E.DATA.items():
+        E.refresh_collision_objects(ph)
 
 
 #=======================#
 # PROPERTIES -----------#
 #=======================#
 class CePropsPoseBone(bpy.types.PropertyGroup):
+
+    head_node_size: bpy.props.FloatProperty(
+        name="Head Node Size",
+        description="Treat this like a sphere with a radius of this size",
+        update=cb_update_node_size,
+        default=0.3,
+    )    
+
+    tail_node_size: bpy.props.FloatProperty(
+        name="Tail Node Size",
+        description="Treat this like a sphere with a radius of this size",
+        update=cb_update_node_size,
+        default=0.3,
+    )    
 
     target: bpy.props.StringProperty(
         name="target",
@@ -230,20 +288,155 @@ class CePropsPoseBone(bpy.types.PropertyGroup):
     head_friction: bpy.props.FloatProperty(
         name="Friction at head",
         description="Simulate the friction of the mesh at bone head",
+        min=0.0,
+        max=1.0,
         default=1.0,
-        update=cb_update_friction,
+        update=cb_bone_friction,
     )    
 
     tail_friction: bpy.props.FloatProperty(
         name="Friction at tail",
         description="simulate the friction of the mesh at bone tail",
+        min=0.0,
+        max=1.0,
         default=1.0,
-        update=cb_update_friction,
+        update=cb_bone_friction,
     )
+
+
+def cb_node_size(self, context):
+    rig = bpy.context.object
+    for b in rig.pose.bones:
+        b.Ce_props['head_node_size'] = rig.Ce_props.node_size
+        b.Ce_props['tail_node_size'] = rig.Ce_props.node_size
+
+
+def cb_object_friction(self, context):
+    ob = bpy.context.object
+    friction = ob.Ce_props.object_friction
+    if ob.type == "MESH":
+        v_list = np.arange(len(ob.data.vertices)).tolist()
+        #U.assign_vert_group(ob, v_list, "Ce_friction", weight=friction)
+
+        for k, ph in E.DATA.items():
+            E.update_colliders(ph)
+            E.refresh_collision_objects(ph)
+
+    if ob.type == "ARMATURE":
+        for b in ob.pose.bones:
+            b.Ce_props['head_friction'] = friction
+            b.Ce_props['tail_friction'] = friction
+    
+        key = bpy.context.object.Ce_props.data_key
+        if key not in E.DATA:
+            return
+        if bpy.context.object != E.DATA[key].physics_rig:
+            return
+
+        ph = E.DATA[key]
+        E.update_node_friction(ph)
+
+
+def cb_update_pose_target(self, context):
+    # come back here
+
+    if self.pose_target is None:
+        print("exited because target object was none")
+        return
+
+    key = self.data_key
+    if key in E.DATA:
+        if E.DATA[key].physics_rig != bpy.context.object:
+            del E.DATA[key]
+
+    bpy.ops.scene.ce_rig_setup()
+    
+
+test_array = np.zeros(12)
+shape = (4,3)
+test_array.shape = (4,3)
+test_string = U.numpy_array_to_string(test_array)
 
 
 # object properties -----------
 class CePropsObject(bpy.types.PropertyGroup):
+
+    record_to_keyframes: bpy.props.BoolProperty(
+        name="Record",
+        description="Record To Keyframes",
+        default=False,
+    )
+
+    ticker: bpy.props.IntProperty(
+        name="Frame Ticker",
+        description="Keeps track for skip frames",
+        default=0,
+    )
+
+    record_frame: bpy.props.IntProperty(
+        name="Record Frame",
+        description="Start or resume recording at this frame",
+        default=1,
+    )
+
+    skip_frames: bpy.props.IntProperty(
+        name="Skip Frames",
+        description="Record Every Nth Frame",
+        default=1,
+    )
+
+    target_object: bpy.props.PointerProperty(
+        name="Target Object",
+        type=bpy.types.Object,
+        description="Select the target object",
+    )
+    
+    velocity_array: bpy.props.StringProperty(
+        name="Velocity Array",
+        description="Store the velocity as a string",
+        default=test_string,
+    )
+
+    current_co_array: bpy.props.StringProperty(
+        name="Current Co Array",
+        description="Store the current_co as a string",
+        default=test_string,
+    )
+
+    vel_start_array: bpy.props.StringProperty(
+        name="Vel Start Array",
+        description="Store the vel_start as a string",
+        default=test_string,
+    )
+
+    data_key: bpy.props.IntProperty(
+        name="Data Key",
+        description="Key for storing and retrieving data",
+        default=0,
+    )
+    
+    pose_target: bpy.props.PointerProperty(
+        name="Pose Target",
+        type=bpy.types.Object,
+        description="Target the pose of this matching armature.",
+        update=cb_update_pose_target,
+    )
+
+    node_size: bpy.props.FloatProperty(
+        name="Node Size",
+        description="Sphere size around nodes",
+        default=0.3,
+        update=cb_node_size
+    )
+
+    object_friction: bpy.props.FloatProperty(
+        name="Friction",
+        description="Friction on the surface of this object",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+        update=cb_object_friction,
+    )
 
     gravity: bpy.props.FloatProperty(
         name="gravity",
@@ -267,14 +460,12 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Animated",
         description="Runs physics when animation is running",
         default=True,
-        # update=cb_handler_update,
     )
 
     live: bpy.props.BoolProperty(
         name="Live",
         description="Runs physics all the time even during the zombie apocalypse",
         default=False,
-        # update=cb_handler_update,
     )
 
     # iters ---------------
@@ -310,6 +501,7 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Inf co linear",
         description="number all solves between frames",
         default=0.0,
+        precision=6,        
     )
 
     # INFLUENCE ---------------
@@ -317,6 +509,7 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Inf spring linear",
         description="number all solves between frames",
         default=0.0,
+        precision=6,
     )
 
     # INFLUENCE ---------------
@@ -324,6 +517,7 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Inf co_lin",
         description="number all solves between frames",
         default=0.0,
+        precision=6,        
     )
 
     # INFLUENCE ---------------
@@ -331,6 +525,7 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Inf co_lin",
         description="number all solves between frames",
         default=0.0,
+        precision=6,        
     )
     
     # INFLUENCE ---------------
@@ -366,6 +561,9 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Inf Spring",
         description="Spring To target",
         default=0.0,
+        precision=6,
+        soft_min=0.0,
+        soft_max=1.0,
         update=cb_update_influence,
     )
 
@@ -374,10 +572,18 @@ class CePropsObject(bpy.types.PropertyGroup):
         name="Inf Spring",
         description="Move in target direction",
         default=0.0,
+        precision=6,
         update=cb_update_influence,
     )
 
-
+    # COLLISION ---------------
+    collider: bpy.props.BoolProperty(
+        name="Collider",
+        description="Check collisions on this object",
+        default=False,
+        update=cb_update_collider,
+    )
+    
 
 # scene properties ----------
 class CePropsScene(bpy.types.PropertyGroup):
@@ -387,6 +593,14 @@ class CePropsScene(bpy.types.PropertyGroup):
         default=False,
         update=cb_test_prop,
     )
+
+    skip_handler: bpy.props.BoolProperty(
+        name="Skip Handler",
+        description="Skip the frame handler for recording",
+        default=False,
+    )
+
+
 
 
 #=======================#
@@ -402,55 +616,70 @@ def set_rest_mode(rig):
     return mode, name
 
 
-def rig_setup():
-    target_rig = bpy.context.object
-    #rig_name = target_rig.data.name
-    #rig_mode = bpy.data.armatures[rig_name].pose_position
-    #bpy.data.armatures[rig_name].pose_position = "REST"
-    #bpy.context.view_layer.update()
+def rig_setup(rig=None):
     
-    rig_mode, rig_name = set_rest_mode(target_rig)
-    
-    print(target_rig.type, ": Should be an armature")
-    if not target_rig.type == 'ARMATURE':
-        print("select an armature goofball")
+    if rig is None:    
+        rig = bpy.context.object
+    if rig.type != "ARMATURE":
+        msg = "Selct an armature"
+        bpy.context.window_manager.popup_menu(U.oops, title=msg, icon='ARMATURE_DATA')
         return
-  
-    phr = None
-    selected = [i for i in bpy.context.selected_objects if (i != target_rig) & (i.type == "ARMATURE")]
     
-    if len(selected) == 1:
-        phr = selected[0]
+    we_good = False
+    pose_target = rig.Ce_props.pose_target
+    if pose_target:
+        if pose_target.type == "ARMATURE":
+            target_rig = pose_target 
+            we_good = True
+        if not we_good:
+            msg = "Pose target needs to be a matching armature."
+            bpy.context.window_manager.popup_menu(U.oops, title=msg, icon='ARMATURE_DATA')
+            rig.Ce_props['pose_target'] = None
+            return
+    else:
+        return
     
-    physics_rig = bpy.context.object    
-    if phr is not None:
-        physics_rig = phr
-
-    p_rig_mode, p_rig_name = set_rest_mode(physics_rig)
-
-
-
-    ph = E.physics(physics_rig, target_rig)
-    #print("Warning! Set a global physics object")
-    #E.ph = ph
-    #look for ph as global in E    
+    key = bpy.context.object.Ce_props.data_key
     
-    M = physics_rig.matrix_world
+    running = False
+    #if False:    
+    if key in E.DATA:
+        ph1 = E.DATA[key]
+        if ph1.physics_rig == rig:
+            #current = np.copy(ph1.current_co)    
+            #velocity = np.copy(ph1.velocity)
+            ph1.pose_target = rig.Ce_props.pose_target
+            return
+
+    rig_mode, rig_name = set_rest_mode(pose_target)
+    p_rig_mode, p_rig_name = set_rest_mode(rig)
+        
+    ph = E.physics(rig, target_rig)
+    
+    M = rig.matrix_world
     ph.mix_mesh.matrix_world = M
     
-    live = physics_rig.Ce_props.live
-    animated = physics_rig.Ce_props.animated
+    live = rig.Ce_props.live
+    animated = rig.Ce_props.animated
     E.install_handler(live=live, animated=animated)
 
-    physics_rig["mix_mesh"] = ph.mix_mesh.id_data
-    physics_rig["target_rig"] = target_rig.id_data
+    rig["mix_mesh"] = ph.mix_mesh.id_data
+    rig["target_rig"] = target_rig.id_data
     target_rig["mix_mesh"] = ph.mix_mesh.id_data
-    target_rig["physics_rig"] = physics_rig.id_data
+    target_rig["physics_rig"] = rig.id_data
     ph.mix_mesh.id_data["target_rig"] = target_rig.id_data
-    ph.mix_mesh.id_data["physics_rig"] = physics_rig.id_data
+    ph.mix_mesh.id_data["physics_rig"] = rig.id_data
     
     bpy.data.armatures[rig_name].pose_position = rig_mode
     bpy.data.armatures[p_rig_name].pose_position = p_rig_mode
+        
+    cb_update_collider(None, None)
+    ### ----- UPDATE RIG ----- ###
+    E.vecs_to_matrix(ph)
+    mesh_bone_co = ph.current_co[ph.mesh_bone_idx]
+    A.set_ar_m3_world(ph.physics_rig, ph.physics_m3, locations=mesh_bone_co, return_quats=False)
+
+    return ph
     
 
 class CeRigSetup(bpy.types.Operator):
@@ -461,7 +690,6 @@ class CeRigSetup(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        print("when child bones have the same parent then need to be evaluated as relative to each other.")
         rig_setup()
         return {'FINISHED'}
 
@@ -477,7 +705,11 @@ def reset_pose(ar):
         
 
 def rig_reset():
-    ph = E.DATA['ph']
+    
+    # just a place to put this while testing
+    bpy.context.scene.Ce_props.skip_handler = False
+    # --------------------------------------
+    
     ob = bpy.context.object
     if ob is None:
         print("No active object")
@@ -504,20 +736,27 @@ def rig_reset():
     reset_pose(target_rig)
     reset_pose(physics_rig)
     
+    key = physics_rig.Ce_props.data_key
+    if key not in E.DATA:
+        return
+    
+    ph = E.DATA[key]
+    if physics_rig != ph.physics_rig:
+        return
+
     if mix_mesh is not None:
-        C.co_to_shape(mix_mesh, co=None, key="Current")
-        C.co_to_shape(mix_mesh, co=None, key="Target")
-        C.co_to_shape(mix_mesh, co=None, key="Basis")
+        U.co_to_shape(mix_mesh, co=None, key="Current")
+        U.co_to_shape(mix_mesh, co=None, key="Target")
+        U.co_to_shape(mix_mesh, co=None, key="Basis")
         
         vc = len(mix_mesh.data.vertices)
         ph.current_co = np.empty((vc, 3), dtype=np.float32)
-        C.get_shape_co_mode(ob=mix_mesh, co=ph.current_co, key='Current')
+        U.get_shape_co_mode(ob=mix_mesh, co=ph.current_co, key='Current')
         ph.velocity = np.zeros((vc, 3), dtype=np.float32)
         ph.vel_start = np.empty((vc, 3), dtype=np.float32)
         ph.vel_start[:] = ph.current_co
         ph.physics_m3 = A.get_ar_matrix_world(target_rig, m3=True)
-        
-
+        E.refresh_collision_objects(ph)
 
 #import bpy
 #from bpy import context
@@ -525,14 +764,26 @@ def rig_reset():
 
 
 
-def make_influence_target(ph=None, type='head', make_parent=False):
+def make_influence_target(type='head', make_parent=False):
     
-    if ph is None:
-        ph = E.DATA['ph']
-    sel_bool = [b.bone.select for b in ph.physics_rig.pose.bones]
-    selected = [b for b in ph.physics_rig.pose.bones if b.bone.select]
+    exit = False
+    physics_rig = bpy.context.object
+    key = bpy.context.object.Ce_props.data_key
+    if key in E.DATA:
+        ph = E.DATA[key]
+        if physics_rig != ph.physics_rig:
+            exit = True
+    else:
+        exit = True
+
+    if exit:
+        print("!!! make_influence_target didn't work !!!")
+        return
+        
+    sel_bool = [b.bone.select for b in physics_rig.pose.bones]
+    selected = [b for b in physics_rig.pose.bones if b.bone.select]
     #matricies = np.array[b.matrix for b in selected]
-    bidx = np.arange(len(ph.physics_rig.pose.bones))
+    bidx = np.arange(len(physics_rig.pose.bones))
     sel_idx = bidx[sel_bool]
     co_idx = ph.mesh_bone_idx[sel_idx]
     co_idx_tial = ph.mesh_bone_tail_idx[sel_idx]
@@ -542,11 +793,7 @@ def make_influence_target(ph=None, type='head', make_parent=False):
         em = U.create_empty(display_type, name, b.matrix, scene=None)
         em.Ce_props.influence_is_target = True
         em.show_in_front = True
-        print()
-        print("========")
-        print(ph.mesh_bone_idx[e], "what idx is this?")
-        print("========")
-        print()
+        em.Ce_props.target_object = ph.physics_rig
         
         head_idx = int(co_idx[e])
         tail_idx = int(co_idx_tial[e])
@@ -644,65 +891,81 @@ class PANEL_PT_Character_Engine(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        if bpy.context.object is None:
+        ob = bpy.context.object
+        if ob is None:
             return
-        col.operator("scene.ce_rig_setup", text="Physics Setup", icon='ARMATURE_DATA')
-        col.operator("scene.ce_rig_reset", text="Reset", icon='FILE_REFRESH')
-        col.prop(bpy.context.object.Ce_props, "animated", text="Animated")
-        col.prop(bpy.context.object.Ce_props, "live", text="Live")
-                
-        col.label(text="Forces")
-        col.prop(bpy.context.object.Ce_props, "gravity", text="Gravity")
-        col.prop(bpy.context.object.Ce_props, "velocity", text="Velocity")
-        col.prop(bpy.context.object.Ce_props, "angular_force", text="Angular Force")
-                
-        col.label(text="Solve Iterations")
-        col.prop(bpy.context.object.Ce_props, "linear_iters", text="Linear")
-        col.prop(bpy.context.object.Ce_props, "angular_iters", text="Angular")
-        col.prop(bpy.context.object.Ce_props, "linear_post_iters", text="Lin Post")
-        col.prop(bpy.context.object.Ce_props, "sub_frames", text="sub frame")
-
-        col.label(text="Future")
-        col.prop(bpy.context.scene.Ce_props, "test", text="Test Callback")
+        if ob.type == "MESH":
+            col.prop(bpy.context.object.Ce_props, "collider", text="Collider")
+            col.prop(bpy.context.object.Ce_props, "object_friction", text="Friction")
         
-        if bpy.context.object is not None:
-            if bpy.context.object.type == "ARMATURE":
-                col.label(text="bone targets")
-                bone = bpy.context.active_pose_bone
-                if bone:
-                    col.label(text="Mass")
-                    col.prop(bone.Ce_props, "head_mass", text="Mass Head")
-                    col.prop(bone.Ce_props, "tail_mass", text="Mass Tail")
-                    col.operator("scene.ce_reset_mass", text="Reset Mass")
-                    
-                    col.label(text="Friction")
-                    col.prop(bone.Ce_props, "head_friction", text="Friction Head")
-                    col.prop(bone.Ce_props, "tail_friction", text="Friction Tail")
-                    
-                    col.label(text="Influence Targets")
-                    col.operator("scene.ce_make_influence_target", text="Head Target", icon='OUTLINER_DATA_ARMATURE')
-                    col.operator("scene.ce_make_influence_target_tail", text="Tail Target", icon='OUTLINER_DATA_ARMATURE')
-                    #col.prop(bone.Ce_props, "target", text="Influence Target")
-                    
-                    col.label(text="Head")
-                    col.prop(bone.Ce_props, "target_object", text="Influence Target")
-                    target = bone.Ce_props.target_object
-                    
-                    if target:
-                        col.prop(target.Ce_props, "influence_directional", text="Directional")
-                        col.prop(target.Ce_props, "influence_spring", text="Spring")
-                    
-                    col.label(text="Tail")
-                    col.prop(bone.Ce_props, "tail_target_object", text="Influence Target")
-                    tail_target = bone.Ce_props.tail_target_object
-                    if tail_target:    
-                        col.prop(tail_target.Ce_props, "influence_directional", text="Directional")
-                        col.prop(tail_target.Ce_props, "influence_spring", text="Spring")
+        if ob.type == "ARMATURE":
+            col.label(text="Recording")
+            col.prop(bpy.context.object.Ce_props, "record_to_keyframes", text="Record to Keyframes")
+            col.prop(bpy.context.object.Ce_props, "skip_frames", text="Every Nth Frame")
+            col.prop(bpy.context.object.Ce_props, "record_frame", text="Record Frame")
 
-
+            col.label(text="Setup")
+            col.prop(bpy.context.object.Ce_props, "pose_target", text="Pose Target")
+            col.operator("scene.ce_rig_setup", text="Physics Setup", icon='ARMATURE_DATA')
+            col.operator("scene.ce_rig_reset", text="Reset", icon='FILE_REFRESH')
+            col.prop(bpy.context.object.Ce_props, "animated", text="Animated")
+            col.prop(bpy.context.object.Ce_props, "live", text="Live")
+                    
+            col.label(text="Forces")
+            col.prop(bpy.context.object.Ce_props, "gravity", text="Gravity")
+            col.prop(bpy.context.object.Ce_props, "velocity", text="Velocity")
+            #col.prop(bpy.context.object.Ce_props, "angular_force", text="Angular Force")
+                    
+            col.label(text="Solve Iterations")
+            col.prop(bpy.context.object.Ce_props, "linear_iters", text="Linear")
+            col.prop(bpy.context.object.Ce_props, "angular_iters", text="Angular")
+            col.prop(bpy.context.object.Ce_props, "linear_post_iters", text="Lin Post")
+            col.prop(bpy.context.object.Ce_props, "sub_frames", text="sub frame")
         
+            col.label(text="bone targets")
+            bone = bpy.context.active_pose_bone
+            if bone:
+                col.label(text="Mass")
+                col.prop(bone.Ce_props, "head_mass", text="Mass Head")
+                col.prop(bone.Ce_props, "tail_mass", text="Mass Tail")
+                col.operator("scene.ce_reset_mass", text="Reset Mass")
+                
+                col.label(text="Friction")
+                col.prop(ob.Ce_props, "object_friction", text="All Bones")
+                col.prop(bone.Ce_props, "head_friction", text="Friction Head")
+                col.prop(bone.Ce_props, "tail_friction", text="Friction Tail")
+                
+                col.label(text="Node Sizes")
+                col.prop(bone.Ce_props, "head_node_size", text="Head Size")
+                col.prop(bone.Ce_props, "tail_node_size", text="Tail Size")                    
+                
+                col.label(text="Influence Targets")
+                col.operator("scene.ce_make_influence_target", text="Head Target", icon='OUTLINER_DATA_ARMATURE')
+                col.operator("scene.ce_make_influence_target_tail", text="Tail Target", icon='OUTLINER_DATA_ARMATURE')
+                #col.prop(bone.Ce_props, "target", text="Influence Target")
+                #col.prop(bpy.context.object.Ce_props, "node_size", text="Node Size")
+                
+                
+                col.label(text="Head")
+                col.prop(bone.Ce_props, "target_object", text="Influence Target")
+                target = bone.Ce_props.target_object
+                
+                if target:
+                    col.prop(target.Ce_props, "influence_directional", text="Directional")
+                    col.prop(target.Ce_props, "influence_spring", text="Spring")
+                
+                col.label(text="Tail")
+                col.prop(bone.Ce_props, "tail_target_object", text="Influence Target")
+                tail_target = bone.Ce_props.tail_target_object
+                if tail_target:    
+                    col.prop(tail_target.Ce_props, "influence_directional", text="Directional")
+                    col.prop(tail_target.Ce_props, "influence_spring", text="Spring")
+            else:
+                col.label(text="Friction")
+                col.prop(ob.Ce_props, "object_friction", text="All Bones Friction")            
+            
         col.label(text="Influence Target")
-        if bpy.context.object is not None:
+        if ob:
             if bpy.context.object.Ce_props.influence_is_target:
                 col.label(text="Influence")
                 col.prop(bpy.context.object.Ce_props, "influence_directional", text="Directional")
@@ -731,6 +994,89 @@ class PANEL_PT_Character_Engine(bpy.types.Panel):
 
 
 #=======================#
+# SAVE/LOAD ------------#
+#=======================#
+@persistent
+def Ce_save_handler(scene=None):
+    
+    for k, ph in E.DATA.items():
+        ce = ph.physics_rig.Ce_props
+        ce.velocity_array = U.numpy_array_to_string(ph.velocity)
+        ce.current_co_array = U.numpy_array_to_string(ph.current_co)
+        ce.vel_start_array = U.numpy_array_to_string(ph.vel_start)
+        
+
+@persistent
+def Ce_load_handler(scene=None):
+    bpy.context.view_layer.update()
+
+    E.DATA = {}
+    for ob in bpy.context.scene.objects:
+        if U.check_object(ob):    
+            if ob.type == "ARMATURE":
+                if ob.Ce_props.pose_target:
+                    rig_setup(rig=ob)
+
+    for k, ph in E.DATA.items():
+        ce = ph.physics_rig.Ce_props
+        ph.current_co = U.string_to_numpy_array(ce.current_co_array)
+        ph.velocity = U.string_to_numpy_array(ce.velocity_array)
+        ph.vel_start = U.string_to_numpy_array(ce.vel_start_array)
+
+        if ph.mix_mesh.data.is_editmode:
+            for i, v in enumerate(ph.mix_obm.verts):
+                if not v.select:    
+                    v.co = ph.current_co[i]
+                        
+            bmesh.update_edit_mesh(ph.mix_mesh.data)
+
+        else: 
+            U.set_shape_co(ph.mix_mesh, "Current", ph.current_co)
+            ph.mix_mesh.data.update()
+        
+        ### ----- UPDATE RIG ----- ###
+        E.vecs_to_matrix(ph)
+        mesh_bone_co = ph.current_co[ph.mesh_bone_idx]
+        A.set_ar_m3_world(ph.physics_rig, ph.physics_m3, locations=mesh_bone_co, return_quats=False)
+                
+
+def save_handler(exit=False):
+    """Handler for saving data.
+    Current states like velocity
+    need to be preserved."""
+
+    # clean dead versions of the save handler
+    handler_names = np.array([i.__name__ for i in bpy.app.handlers.save_pre])
+    booly = [i == 'Ce_save_handler' for i in handler_names]
+    idx = np.arange(handler_names.shape[0])
+    idx_to_kill = idx[booly]
+    for i in idx_to_kill[::-1]:
+        del(bpy.app.handlers.save_pre[i])
+
+    if exit:
+        return
+    bpy.app.handlers.save_pre.append(Ce_save_handler)
+
+
+def load_handler(exit=False):
+    """Handler for loading data.
+    Current states like velocity
+    need to be preserved."""
+
+    # clean dead versions of the animated handler
+    handler_names = np.array([i.__name__ for i in bpy.app.handlers.load_post])
+    booly = [i == 'Ce_load_handler' for i in handler_names]
+    idx = np.arange(handler_names.shape[0])
+    idx_to_kill = idx[booly]
+    for i in idx_to_kill[::-1]:
+        del(bpy.app.handlers.load_post[i])
+
+    if exit:
+        return
+    bpy.app.handlers.load_post.append(Ce_load_handler)
+
+
+#=======================#
 # REGISTER -------------#
 #=======================#
 classes = (
@@ -755,6 +1101,20 @@ def register():
     bpy.types.Scene.Ce_props = bpy.props.PointerProperty(type=CePropsScene)
     bpy.types.Object.Ce_props = bpy.props.PointerProperty(type=CePropsObject)
     bpy.types.PoseBone.Ce_props = bpy.props.PointerProperty(type=CePropsPoseBone)
+    
+    save_handler()
+    load_handler()
+
+    E.install_handler(live=False, animated=False)
+#    for ob in bpy.data.objects:
+#        if "physics_mesh" in ob:
+#            del(ob["physics_mesh"])
+#        if "target_rig" in ob:
+#            del(ob["target_rig"])
+#        if "physics_rig" in ob:
+#            del(ob["physics_rig"])
+
+#    bpy.context.scene.Ce_props.skip_handler = False
 
 
 def unregister():
@@ -767,7 +1127,10 @@ def unregister():
 
     for cls in reversed(classes):
         unregister_class(cls)
-
+    
+    save_handler(exit=True)
+    load_handler(exit=True)
+    
 
 if __name__ == "__main__":
     register()
