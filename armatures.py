@@ -13,6 +13,207 @@ except:
     U = bpy.data.texts['utils.py'].as_module()
 
 
+def compare_rig_spaces(rig1, rig2):
+    """Compare the head and tail of the active bone respecting
+    each rig's world matrix. Return the index of the bone in rig2 whose
+    head and tail together are closest to the active bone."""
+
+    active_bone = bpy.context.active_pose_bone
+    if active_bone:
+            
+        local_matrix = np.linalg.inv(rig1.matrix_world) @ np.array(rig2.matrix_world, dtype=np.float32)
+
+        hco = get_bone_head(rig2) @ local_matrix[:3, :3].T
+        tco = get_bone_tail(rig2) @ local_matrix[:3, :3].T
+        hco += local_matrix[:3, 3]
+        tco += local_matrix[:3, 3]
+
+        bhco = np.array(active_bone.head, dtype=np.float32)
+        thco = np.array(active_bone.tail, dtype=np.float32)
+        
+        h_dif = bhco - hco
+        t_dif = thco - tco
+        h_dist = U.measure_vecs(h_dif)
+        t_dist = U.measure_vecs(t_dif)
+        
+        sumingtons = h_dist + t_dist
+        closest = np.argmin(sumingtons)
+        return closest        
+
+
+def copy_roll(rig, bone_index):
+
+    modes = U.manage_modes()
+    active_bone_name = bpy.context.active_pose_bone.name
+    bpy.ops.object.mode_set(mode='EDIT')
+    roll = bpy.context.object.data.edit_bones[active_bone_name].roll
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    rig.data.edit_bones[bone_index].roll = roll    
+    U.manage_modes(modes)
+    
+
+def manage_parents(phys, pose=None, phys_parents=None):
+    """Set phys parents to match pose before rig setup"""
+    original_selected = bpy.context.selected_objects[:]
+    original_active = bpy.context.active_object
+    original_object_modes = {ob: ob.mode for ob in original_selected}
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    if phys_parents:
+        bpy.context.view_layer.objects.active = phys
+        bpy.ops.object.select_all(action='DESELECT')
+        phys.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        for i in range(len(phys.data.edit_bones)):
+            phys.data.edit_bones[i].parent = phys_parents[i]
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        for ob in original_selected:
+            ob.select_set(True)
+            bpy.context.view_layer.objects.active = ob
+            bpy.ops.object.mode_set(mode=original_object_modes[ob])
+        return
+
+    bpy.context.view_layer.objects.active = pose
+    bpy.ops.object.select_all(action='DESELECT')
+    pose.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    for i in range(len(pose.data.edit_bones)):
+        pose.data.edit_bones[i]['index'] = i
+        print(i)
+        
+    parents = {}
+    for b in pose.data.edit_bones:
+        if b.parent:    
+            parents[b['index']] = b.parent['index']
+        else:
+            parents[b['index']] = None
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    bpy.context.view_layer.objects.active = phys
+    bpy.ops.object.select_all(action='DESELECT')
+    phys.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    for i in range(len(phys.data.edit_bones)):
+        phys.data.edit_bones[i]['index'] = i
+
+    phys_parents = {}
+    for b in phys.data.edit_bones:
+        if b.parent:
+            phys_parents[b['index']] = b.parent['index']
+        else:
+            phys_parents[b['index']] = None    
+    
+    for i in range(len(phys.data.edit_bones)):
+        if parents[i] is not None:    
+            phys.data.edit_bones[i].parent = phys.data.edit_bones[parents[i]]
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for ob in original_selected:
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+        bpy.ops.object.mode_set(mode=original_object_modes[ob])
+    
+    print(phys_parents, "this")
+    for k, v in phys_parents.items():
+        print(k)
+        
+    return phys_parents
+
+
+def disconnect_bones(ar):
+    original_selected = bpy.context.selected_objects[:]
+    original_active = bpy.context.active_object
+    original_object_modes = {ob: ob.mode for ob in original_selected}    
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    bpy.context.view_layer.objects.active = ar
+    bpy.ops.object.select_all(action='DESELECT')
+    ar.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    
+    for bone in ar.data.edit_bones:
+        if bone.parent:    
+            bone.use_connect = False
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for ob in original_selected:
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+        bpy.ops.object.mode_set(mode=original_object_modes[ob])
+     
+
+def connect_bones(armature_ob, connected=False, clear_parents=False):
+    """Switch armature bones between connected or disconnected"""
+    
+    pose_target = armature_ob.CP_props.pose_target
+    if pose_target:
+        for e, b in enumerate(pose_target.pose.bones):
+            b['index'] = e
+    
+    original_selected = bpy.context.selected_objects[:]
+    original_active = bpy.context.active_object
+    original_object_modes = {ob: ob.mode for ob in original_selected}
+    
+    if bpy.context.mode == 'POSE':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.context.view_layer.objects.active = armature_ob
+    bpy.ops.object.select_all(action='DESELECT')
+    armature_ob.select_set(True)
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    
+    for e, b in enumerate(armature_ob.data.edit_bones):
+        b['index'] = e
+    
+    parents = {}
+    for i in range(len(armature_ob.data.edit_bones)):
+        bone = armature_ob.data.edit_bones[i]
+        if connected:
+            if pose_target:
+                pose_parent = pose_target.pose.bones[i].parent
+                parents[i] = None
+                if bone.parent:
+                    parents[i] = bone.parent['index']
+                if pose_parent:
+                    idx = pose_parent['index']
+                    bone.parent = armature_ob.data.edit_bones[idx]
+            else:    
+                if not bone.parent:
+                    for b in armature_ob.data.edit_bones:
+                        if b != bone:
+                            dif = np.array(bone.head) - np.array(b.tail)
+                            dist = np.nan_to_num(np.sqrt(dif @ dif))
+                            print(dist)
+                            if dist <= 0.0000000001:
+                                bone.parent = b
+            
+        if bone.parent:    
+            bone.use_connect = connected
+        if clear_parents:
+            bone.parent = None
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for ob in original_selected:
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
+        bpy.ops.object.mode_set(mode=original_object_modes[ob])
+    return parents
+    
+    
 #### quaternions ####
 def get_ar_quats(ar, quats=None):
     """Returns rotation relative to edit bone.
@@ -53,32 +254,10 @@ def set_b_matricies(ar, bm3s, locations=None):
         nparm[:3, :3] = bm3s[i]
         if locations is not None:
             nparm[:3, 3] = locations[i]
-        mat = MAT(nparm)
-        ar.pose.bones[i].matrix = mat    
-    bpy.context.view_layer.update()
-
-
-#### quaternions ####
-def set_ar_m3_world(ar, m3, locations=None, return_quats=False):
-    """Sets the world rotation correctly
-    in spite of parent bones. (and constraints??)"""
-    if return_quats:
-        quats = np.empty((m3.shape[0], 4), dtype=np.float32)
-    for i in range(len(ar.pose.bones)):
-        bpy.context.view_layer.update()
-        arm = ar.pose.bones[i].matrix
-        nparm = np.array(arm)
-        nparm[:3, :3] = m3[i]
-        if locations is not None:
-            nparm[:3, 3] = locations[i]
-        mat = MAT(nparm)
-        if return_quats:
-            quats[i] = mat.to_quaternion()
+        #mat = MAT(nparm)
+        mat = nparm.T
         ar.pose.bones[i].matrix = mat
-    
     bpy.context.view_layer.update()
-    if return_quats:    
-        return quats
 
 
 #### armature ####
@@ -150,6 +329,37 @@ def get_bone_location_world(ar, location=None):
     return location
 
 
+def fast_m4(ar, m4=None):
+    if m4 is None:
+        bc = len(ar.pose.bones)
+        m4 = np.empty((bc, 4, 4), dtype=np.float32)        
+    ar.pose.bones.foreach_get('matrix', m4.ravel())
+    return np.swapaxes(m4, 1, 2)
+
+
+def just_m4(ar, m4=None):
+    if m4 is None:
+        bc = len(ar.pose.bones)
+        m4 = np.empty((bc, 4, 4), dtype=np.float32)        
+    ar.pose.bones.foreach_get('matrix', m4.ravel())
+    return m4
+
+
+def just_set_m4(m4, ar):
+    ar.pose.bones.foreach_set('matrix', m4.ravel())
+    ar.pose.bones[0].location = ar.pose.bones[0].location
+
+
+def fast_m3(ar, m3=None, T=True):
+    if m3 is None:
+        bc = len(ar.pose.bones)
+        m3 = np.empty((bc, 4, 4), dtype=np.float32)
+    ar.pose.bones.foreach_get('matrix', m3.ravel())
+    if T:    
+        return np.swapaxes(m3[:, :3, :3], 1, 2)
+    return m3[:, :3, :3]
+
+
 def get_ar_m3(ar, m3=None):
     bc = len(ar.pose.bones)
     if m3 is None:
@@ -157,6 +367,46 @@ def get_ar_m3(ar, m3=None):
     for e, bo in enumerate(ar.pose.bones):
         m3[e] = np.array(bo.matrix, dtype=np.float32)[:3, :3]
     return m3
+
+
+def fast_set_m3(m4, ar, m3, locs):
+    m4[:, :3, 3] = locs
+    m4[:, :3, :3] = m3
+    m4 = np.swapaxes(m4, 1, 2)
+    ar.pose.bones.foreach_set('matrix', m4.ravel())
+    
+    ar.pose.bones[0].location = ar.pose.bones[0].location
+
+
+def fast_set_m4(m4, ar):
+    m4 = np.swapaxes(m4, 1, 2)
+    ar.pose.bones.foreach_set('matrix', m4.ravel())
+    
+    ar.pose.bones[0].location = ar.pose.bones[0].location
+
+
+#### quaternions ####
+def set_ar_m3_world(ar, m3, locations=None, return_quats=False):
+    """Sets the world rotation correctly
+    in spite of parent bones. (and constraints??)"""
+    if return_quats:
+        quats = np.empty((m3.shape[0], 4), dtype=np.float32)
+    for i in range(len(ar.pose.bones)):
+        bpy.context.view_layer.update()
+        arm = ar.pose.bones[i].matrix
+        nparm = np.array(arm)
+        nparm[:3, :3] = m3[i]
+        if locations is not None:
+            nparm[:3, 3] = locations[i]
+        #mat = MAT(nparm)
+        mat = nparm.T
+        if return_quats:
+            quats[i] = mat.to_quaternion()
+        ar.pose.bones[i].matrix = mat
+    
+    bpy.context.view_layer.update()
+    if return_quats:    
+        return quats
     
 
 #### armature ####    
@@ -218,9 +468,14 @@ def get_relative_bones(ar, flatten=True, return_repeater=True):
     return relationships
 
 
-def make_ar_mesh(ar):
+def make_ar_mesh(ar, pose_target=None):
 
-    relative, repeater = get_relative_bones(ar)
+    if pose_target:        
+        relative, repeater = get_relative_bones(pose_target)
+    else:
+        relative, repeater = get_relative_bones(ar)
+    
+    
     head = get_bone_head(ar)
     tail = get_bone_tail(ar)
         
@@ -277,6 +532,7 @@ def make_ar_mesh(ar):
     
     ob = None
     name = ar.name + "_CE_physics_mesh"
+
     if name in bpy.data.objects:
         ob = bpy.data.objects[name]
         if ob.data.is_editmode:
@@ -287,8 +543,7 @@ def make_ar_mesh(ar):
 
 
 def make_mix_mesh(ar, ph):
-
-    #relative, repeater = get_relative_bones(ar)
+    
     for e, b in enumerate(ar.pose.bones):
         b['index'] = e
 
@@ -348,10 +603,13 @@ def make_mix_mesh(ar, ph):
     
     ob = None
     name = ar.name + "_Ce_physics_mesh"
+    
     if name in bpy.data.objects:
-        ob = bpy.data.objects[name]
-        if ob.data.is_editmode:
-            bpy.ops.object.mode_set()
+        bpy.data.objects.remove(bpy.data.objects[name])
+
+        #bpy.data.objects[name].name = "dead_physics_mesh"
+        #if ob.data.is_editmode:
+            #bpy.ops.object.mode_set()
     
     mesh_bone_idx = np.array(edges, dtype=np.int32)[:, 0]
     mesh_bone_tail_idx = np.array(edges, dtype=np.int32)[:, 1]
@@ -389,7 +647,7 @@ def make_mix_mesh(ar, ph):
         lateral_edges += [l1, l2, l3, l4]
     
     with_lats = edges_with_x + lateral_edges
-    mix_mesh = U.link_mesh(co_with_x, edges=with_lats, faces=[], name=name)# name=ph.physics_rig.name + "_mix_mesh")
+    mix_mesh = U.link_mesh(co_with_x, edges=with_lats, faces=[], name=name, check_ob=False)# name=ph.physics_rig.name + "_mix_mesh")
     mix_mesh.matrix_world = ph.physics_rig.matrix_world
 
     return mix_mesh, edges, x_eidx, x_start_eidx, mix_vidx, x_vidx, y_vidx
